@@ -6,9 +6,17 @@ import { Card, CardContent } from "@/components/ui/card";
 // Put your files in: /public/assets/
 const ASSETS = {
   logo: "/assets/MaggioUpholsteryLogo-vectored-try1.png",
+
+  // Original hero (blueprint look)
   hero: "/assets/LC-3.png",
-  a: "/assets/MC-1.png",
-  b: "/assets/LC-1.png",
+
+  // Recent work (new touched images)
+  seatsHero: "/assets/seats-touched.png",
+  installedWork: "/assets/installed-touched-2.png",
+  restsDetail: "/assets/rests-touched-2.png",
+
+  // Before / After
+  beforeAfter: "/assets/before-after-touched.png",
 };
 
 const Chip = ({ children }: { children: React.ReactNode }) => (
@@ -84,32 +92,21 @@ export default function Page() {
 
                 <h1 className="mt-5 text-3xl md:text-5xl font-semibold tracking-tight">
                   Built like a blueprint.
-                  <span className="block text-zinc-300">Stitched like it’s factory.</span>
+                  <span className="block text-zinc-300">Finished for real use.</span>
                 </h1>
                 <p className="mt-4 text-zinc-400 leading-relaxed">
-                  We take measurements, make patterns, and stitch for repeatable alignment—tight seams, clean corners,
-                  and branding that reads. Seats, headrests, cushions, and motorcycle work.
+                  Custom automotive and marine upholstery focused on fit, durability, and clean presentation.
+                  Seats, cushions, armrests, and interior details—measured, patterned, and stitched in-house.
                 </p>
 
                 <div className="mt-6 flex flex-col sm:flex-row gap-3">
-                  <Button className="rounded-2xl h-11">Request Pricing</Button>
+                  <Button className="rounded-2xl h-11">Request a Quote</Button>
                   <Button
                     variant="outline"
                     className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
                   >
-                    See Recent Work
+                    View Recent Work
                   </Button>
-                </div>
-
-                <div className="mt-7 grid grid-cols-2 gap-4">
-                  <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
-                    <div className="text-xs text-zinc-500">Typical lead time</div>
-                    <div className="mt-1 text-sm font-semibold">2–4 weeks</div>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
-                    <div className="text-xs text-zinc-500">Fast quote</div>
-                    <div className="mt-1 text-sm font-semibold">3 photos</div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -118,55 +115,13 @@ export default function Page() {
             <div className="lg:col-span-7">
               <div className="relative overflow-hidden rounded-[2rem] border border-zinc-900 bg-zinc-950">
                 <div className="relative aspect-[16/10]">
-                  <img src={ASSETS.hero} alt="Land Cruiser headrest embroidery" className="absolute inset-0 h-full w-full object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-tr from-black/70 via-black/25 to-black/10" />
+                  <img
+                    src={ASSETS.hero}
+                    alt="Custom headrest embroidery shown through vehicle window at sunset"
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-tr from-black/70 via-black/30 to-black/10" />
                 </div>
-
-                {/* Measurement callouts */}
-                <div className="absolute inset-0">
-                  <div className="absolute left-5 top-5 rounded-2xl border border-white/10 bg-black/35 px-3 py-2 text-xs text-white/80 backdrop-blur">
-                    LOGO PLACEMENT
-                    <span className="ml-2 text-white/60">centered</span>
-                  </div>
-                  <div className="absolute right-5 bottom-5 rounded-2xl border border-white/10 bg-black/35 px-3 py-2 text-xs text-white/80 backdrop-blur">
-                    STITCH DENSITY
-                    <span className="ml-2 text-white/60">crisp edges</span>
-                  </div>
-                  <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2">
-                    <div className="mx-auto w-[92%] border-t border-white/20" />
-                  </div>
-                  <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2">
-                    <div className="h-full border-l border-white/15" />
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-5">
-                <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70 overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="relative aspect-[4/3]">
-                      <img src={ASSETS.a} alt="Motorcycle seat and bags" className="absolute inset-0 h-full w-full object-cover" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
-                      <div className="absolute bottom-0 p-5">
-                        <div className="text-white font-semibold">Motorcycle seat + bags</div>
-                        <div className="text-white/70 text-sm">Comfort shaping • weather-ready build</div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70 overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="relative aspect-[4/3]">
-                      <img src={ASSETS.b} alt="Headrest embroidery close-up" className="absolute inset-0 h-full w-full object-cover" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
-                      <div className="absolute bottom-0 p-5">
-                        <div className="text-white font-semibold">Headrests + branding</div>
-                        <div className="text-white/70 text-sm">OEM-clean placement • crisp stitch</div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
               </div>
             </div>
           </div>
@@ -178,9 +133,9 @@ export default function Page() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex items-end justify-between gap-6">
             <div>
-              <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">Recent work</h2>
+              <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">Recent builds</h2>
               <p className="mt-2 text-zinc-400 max-w-2xl">
-                A quick set of builds. The goal: factory-clean look with materials that hold up.
+                Real projects—photographed to show materials, stitching, and how the work lives in the vehicle.
               </p>
             </div>
             <Button
@@ -195,11 +150,15 @@ export default function Page() {
             <Card className="md:col-span-7 rounded-[2rem] border-zinc-900 bg-zinc-950/70 overflow-hidden">
               <CardContent className="p-0">
                 <div className="relative aspect-[16/9]">
-                  <img src={ASSETS.hero} alt="Gallery hero" className="absolute inset-0 h-full w-full object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+                  <img
+                    src={ASSETS.installedWork}
+                    alt="Installed custom Toyota interior with patterned seats"
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
                   <div className="absolute bottom-0 p-6">
-                    <div className="text-white text-lg font-semibold">Logo work that sits right</div>
-                    <div className="text-white/70 text-sm">Spacing, alignment, and stitch density—checked twice.</div>
+                    <div className="text-white text-lg font-semibold">Installed interior</div>
+                    <div className="text-white/70 text-sm">Finished fitment shown in real lighting and use.</div>
                   </div>
                 </div>
               </CardContent>
@@ -208,11 +167,32 @@ export default function Page() {
             <Card className="md:col-span-5 rounded-[2rem] border-zinc-900 bg-zinc-950/70 overflow-hidden">
               <CardContent className="p-0">
                 <div className="relative aspect-[4/5]">
-                  <img src={ASSETS.a} alt="Gallery motorcycle" className="absolute inset-0 h-full w-full object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+                  <img
+                    src={ASSETS.restsDetail}
+                    alt="Custom armrest upholstery detail"
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
                   <div className="absolute bottom-0 p-6">
-                    <div className="text-white text-lg font-semibold">Motorcycle build</div>
-                    <div className="text-white/70 text-sm">Comfort + durability without bulk.</div>
+                    <div className="text-white text-lg font-semibold">Armrest details</div>
+                    <div className="text-white/70 text-sm">Matched materials and clean edge finish.</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="md:col-span-12 rounded-[2rem] border-zinc-900 bg-zinc-950/70 overflow-hidden">
+              <CardContent className="p-0">
+                <div className="relative aspect-[16/7]">
+                  <img
+                    src={ASSETS.seatsHero}
+                    alt="Toyota front seats with custom patterned inserts"
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/20 to-black/10" />
+                  <div className="absolute bottom-0 p-6">
+                    <div className="text-white text-xl font-semibold">Toyota front seats</div>
+                    <div className="text-white/70 text-sm">Custom inserts, clean seams, OEM-style fit.</div>
                   </div>
                 </div>
               </CardContent>
@@ -226,27 +206,18 @@ export default function Page() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <div className="lg:col-span-5">
-              <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">Build specs</h2>
+              <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">Before / After</h2>
               <p className="mt-2 text-zinc-400 leading-relaxed">
-                A straightforward overview of what we optimize for—fitment, durability, and clean presentation.
+                Worn originals rebuilt with new materials, reinforced edges, and clean piping—done once, done right.
               </p>
-              <div className="mt-6 flex flex-wrap gap-2">
-                <Chip>UV-ready options</Chip>
-                <Chip>Water-resistant builds</Chip>
-                <Chip>Logo embroidery</Chip>
-                <Chip>Foam rebuilds</Chip>
-              </div>
             </div>
 
-            <div className="lg:col-span-7 rounded-[2rem] border border-zinc-900 bg-zinc-950/70 p-6 md:p-7">
-              <Spec k="Stitching" v="Walking-foot + double-needle capability" />
-              <Spec k="Materials" v="Marine vinyl, leather, performance fabrics" />
-              <Spec k="Approach" v="Measured, patterned, stitched in-house" />
-              <Spec k="Finish" v="Tight corners, straight lines, consistent tension" />
-              <Spec k="Branding" v="Centered placement, crisp edges" />
-              <div className="mt-5 text-xs text-zinc-500">
-                Ask for a material sample match if you’re trying to blend with OEM trim.
-              </div>
+            <div className="lg:col-span-7 rounded-[2rem] border border-zinc-900 bg-zinc-950/70 overflow-hidden">
+              <img
+                src={ASSETS.beforeAfter}
+                alt="Before and after car seat upholstery restoration"
+                className="w-full h-full object-cover"
+              />
             </div>
           </div>
         </div>
