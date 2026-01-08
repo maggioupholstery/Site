@@ -1,16 +1,14 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { Resend } from "resend";
 import {
   estimateFromAssessment,
   type AiAssessment,
   type QuoteCategory,
-} from "@/lib/pricing";
+} from "../../../lib/pricing";
 
 export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ---- helpers ----
 async function fileToDataUrl(file: File): Promise<string> {
@@ -86,7 +84,9 @@ export async function POST(req: Request) {
       const mb = (f as any).size / (1024 * 1024);
       if (mb > MAX_MB_PER_IMAGE) {
         return json(
-          { error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.` },
+          {
+            error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.`,
+          },
           { status: 413 }
         );
       }
@@ -164,19 +164,14 @@ export async function POST(req: Request) {
       },
     });
 
-    // Defensive: sometimes output_text can be empty if a tool message came back
     const raw = (ai as any).output_text || "";
     let assessment: AiAssessment;
 
     try {
       assessment = JSON.parse(raw) as AiAssessment;
     } catch {
-      // Provide useful debug info back to the client
       return json(
-        {
-          error: "AI output parsing failed.",
-          raw,
-        },
+        { error: "AI output parsing failed.", raw },
         { status: 502 }
       );
     }
@@ -242,14 +237,17 @@ export async function POST(req: Request) {
 
     if (process.env.RESEND_API_KEY) {
       try {
+        const mod = await import("resend");
+        const resend = new mod.Resend(process.env.RESEND_API_KEY);
+
         await resend.emails.send({
           from,
           to,
           subject,
           html,
-          // so you can just hit Reply in Gmail
           replyTo: email ? email : undefined,
         });
+
         emailSent = true;
       } catch (err) {
         console.error("Resend email failed:", err);
@@ -258,9 +256,6 @@ export async function POST(req: Request) {
 
     return json({ assessment, estimate: safeEstimate, emailSent });
   } catch (e: any) {
-    return json(
-      { error: e?.message || "Unknown error" },
-      { status: 500 }
-    );
+    return json({ error: e?.message || "Unknown error" }, { status: 500 });
   }
 }
