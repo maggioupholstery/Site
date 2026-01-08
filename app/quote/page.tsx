@@ -37,6 +37,18 @@ export default function QuotePage() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
+  async function safeReadJson(res: Response) {
+    // Vercel/serverless errors sometimes return HTML or empty body -> res.json() explodes.
+    const rawText = await res.text();
+    if (!rawText) return { rawText: "", json: null };
+
+    try {
+      return { rawText, json: JSON.parse(rawText) };
+    } catch {
+      return { rawText, json: null };
+    }
+  }
+
   async function onSubmit() {
     setError(null);
     setResult(null);
@@ -58,10 +70,24 @@ export default function QuotePage() {
       files.slice(0, 3).forEach((f) => fd.append("photos", f));
 
       const res = await fetch("/api/quote", { method: "POST", body: fd });
-      const data = await res.json();
+      const { rawText, json } = await safeReadJson(res);
 
-      if (!res.ok) throw new Error(data?.error || "Quote failed");
-      setResult(data);
+      if (!res.ok) {
+        const apiMsg =
+          (json as any)?.error ||
+          (json as any)?.message ||
+          (rawText ? rawText.slice(0, 180) : "");
+        throw new Error(apiMsg || `Quote failed (HTTP ${res.status}).`);
+      }
+
+      if (!json) {
+        // Success status but no JSON body (rare) — show something actionable.
+        throw new Error(
+          "Server returned an empty or non-JSON response. Please try again, or reduce photo size."
+        );
+      }
+
+      setResult(json);
 
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -161,9 +187,7 @@ export default function QuotePage() {
                   <div className="text-sm text-zinc-300">
                     Photos <span className="text-zinc-500">(max 3)</span>
                   </div>
-                  <div className="text-xs text-zinc-500">
-                    {files.length}/3 selected
-                  </div>
+                  <div className="text-xs text-zinc-500">{files.length}/3 selected</div>
                 </div>
 
                 {/* Hidden inputs */}
@@ -309,9 +333,7 @@ export default function QuotePage() {
                       <div className="mt-1 text-sm font-semibold">
                         {laborHours} hrs @ ${laborRate}/hr
                       </div>
-                      <div className="text-xs text-zinc-500 mt-1">
-                        Subtotal: ${laborSubtotal}
-                      </div>
+                      <div className="text-xs text-zinc-500 mt-1">Subtotal: ${laborSubtotal}</div>
                     </div>
 
                     <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
@@ -319,19 +341,13 @@ export default function QuotePage() {
                       <div className="mt-1 text-sm font-semibold">
                         ${materialsLow} – ${materialsHigh}
                       </div>
-                      <div className="text-xs text-zinc-500 mt-1">
-                        Based on material guess & scope
-                      </div>
+                      <div className="text-xs text-zinc-500 mt-1">Based on material guess & scope</div>
                     </div>
 
                     <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
                       <div className="text-xs text-zinc-500">Shop Minimum</div>
-                      <div className="mt-1 text-sm font-semibold">
-                        ${shopMinimum}
-                      </div>
-                      <div className="text-xs text-zinc-500 mt-1">
-                        Applies if small repair
-                      </div>
+                      <div className="mt-1 text-sm font-semibold">${shopMinimum}</div>
+                      <div className="text-xs text-zinc-500 mt-1">Applies if small repair</div>
                     </div>
                   </div>
 
@@ -339,8 +355,7 @@ export default function QuotePage() {
                     <div className="text-lg font-semibold">AI Repair Recommendation</div>
 
                     <div className="mt-2 text-sm text-zinc-300">
-                      <span className="text-zinc-500">Damage:</span>{" "}
-                      {result.assessment?.damage}
+                      <span className="text-zinc-500">Damage:</span> {result.assessment?.damage}
                     </div>
                     <div className="mt-1 text-sm text-zinc-300">
                       <span className="text-zinc-500">Recommended repair:</span>{" "}
