@@ -250,7 +250,11 @@ export async function POST(req: Request) {
               type: "input_text",
               text: `Category selected: ${category}\nCustomer notes: ${notes || "(none)"}`,
             },
-            ...dataUrls.map((url) => ({ type: "input_image", image_url: url })),
+            ...dataUrls.map((url) => ({
+              type: "input_image" as const,
+              image_url: url,
+              detail: "low" as const,
+            })),
           ],
         },
       ],
