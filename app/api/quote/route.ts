@@ -4,7 +4,7 @@ import {
   estimateFromAssessment,
   type AiAssessment,
   type QuoteCategory,
-} from "@/lib/pricing";
+} from "../../../lib/pricing";
 
 export const runtime = "nodejs";
 
