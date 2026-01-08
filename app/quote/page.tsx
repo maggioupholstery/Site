@@ -38,7 +38,6 @@ export default function QuotePage() {
   }
 
   async function safeReadJson(res: Response) {
-    // Vercel/serverless errors sometimes return HTML or empty body -> res.json() explodes.
     const rawText = await res.text();
     if (!rawText) return { rawText: "", json: null };
 
@@ -81,7 +80,6 @@ export default function QuotePage() {
       }
 
       if (!json) {
-        // Success status but no JSON body (rare) — show something actionable.
         throw new Error(
           "Server returned an empty or non-JSON response. Please try again, or reduce photo size."
         );
@@ -99,7 +97,7 @@ export default function QuotePage() {
     }
   }
 
-  // Normalize estimate fields (works if API returns snake_case or missing)
+  // Normalize estimate fields
   const est = result?.estimate || {};
   const totalLow = Number(est.totalLow ?? est.total_low ?? 0);
   const totalHigh = Number(est.totalHigh ?? est.total_high ?? 0);
@@ -115,7 +113,7 @@ export default function QuotePage() {
 
   const assumptions: string[] = Array.isArray(est.assumptions) ? est.assumptions : [];
 
-  // ✅ Normalize assessment ONCE and use everywhere
+  // Normalize assessment ONCE and use everywhere
   const assessment = result?.assessment ?? {};
 
   const materialSuggestions = String(
@@ -125,6 +123,9 @@ export default function QuotePage() {
   const repairExplained = String(
     assessment.recommended_repair_explained ?? assessment.recommendedRepairExplained ?? ""
   ).trim();
+
+  // Restored preview image from the API
+  const previewImageDataUrl = String(result?.previewImageDataUrl ?? "").trim();
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -201,7 +202,6 @@ export default function QuotePage() {
                   <div className="text-xs text-zinc-500">{files.length}/3 selected</div>
                 </div>
 
-                {/* Hidden inputs */}
                 <input
                   ref={cameraRef}
                   type="file"
@@ -261,7 +261,6 @@ export default function QuotePage() {
                   </Button>
                 </div>
 
-                {/* Previews */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {previews.map((src, i) => (
                     <div
@@ -338,6 +337,34 @@ export default function QuotePage() {
                     </div>
                   </div>
 
+                  {/* ✅ Restored preview section (FIXED: brighter text) */}
+                  <div className="rounded-2xl border border-zinc-900 bg-gradient-to-b from-black/50 to-black/25 p-4">
+                    <div className="flex items-end justify-between gap-3">
+                      <div className="text-lg font-semibold text-zinc-100">
+                        Restored Preview
+                      </div>
+                      <div className="text-xs text-zinc-300">Concept only</div>
+                    </div>
+
+                    <div className="mt-2 text-xs text-zinc-300">
+                      This is an AI-generated “after” preview based on your photo. Final materials, color match, and stitching details are confirmed after inspection and sample approval.
+                    </div>
+
+                    {previewImageDataUrl ? (
+                      <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-900 bg-black/30">
+                        <img
+                          src={previewImageDataUrl}
+                          alt="AI restored preview"
+                          className="w-full h-auto object-cover"
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-sm text-zinc-200">
+                        Preview unavailable for this submission. (We still generated your estimate.)
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
                       <div className="text-xs text-zinc-500">Labor</div>
@@ -380,7 +407,6 @@ export default function QuotePage() {
                       {assessment.material_guess ?? "—"}
                     </div>
 
-                    {/* ✅ NEW: material suggestions */}
                     {materialSuggestions && (
                       <div className="mt-3 text-sm text-zinc-300">
                         <div className="text-zinc-500">Material suggestions:</div>
@@ -388,7 +414,6 @@ export default function QuotePage() {
                       </div>
                     )}
 
-                    {/* ✅ NEW: repair process explanation */}
                     {repairExplained && (
                       <div className="mt-3 text-sm text-zinc-300">
                         <div className="text-zinc-500">How we’d repair it:</div>
