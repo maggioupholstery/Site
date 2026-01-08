@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// ---- helpers ----
 async function fileToDataUrl(file: File): Promise<string> {
   const ab = await file.arrayBuffer();
   const base64 = Buffer.from(ab).toString("base64");
@@ -28,8 +29,38 @@ function esc(s: unknown) {
     .replace(/'/g, "&#039;");
 }
 
+function json(data: any, init?: ResponseInit) {
+  return NextResponse.json(data, init);
+}
+
+// Allow browser preflight (helps when anything ever calls this cross-origin)
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+  });
+}
+
+// Nice debug response if you open /api/quote in the browser
+export async function GET() {
+  return json({
+    ok: true,
+    message:
+      "Quote endpoint is alive. Send a POST multipart/form-data with fields: category,name,email,phone,notes and photos (1–3).",
+  });
+}
+
 export async function POST(req: Request) {
   try {
+    // Belt + suspenders: in case routing ever behaves oddly
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, { status: 405 });
+    }
+
     const form = await req.formData();
 
     const name = String(form.get("name") || "");
@@ -39,17 +70,31 @@ export async function POST(req: Request) {
     const notes = String(form.get("notes") || "");
 
     const files = (form.getAll("photos") as File[]).filter(
-      (f) => f && (f as any).size > 0
+      (f) => f && typeof (f as any).size === "number" && (f as any).size > 0
     );
+
     if (files.length === 0) {
-      return NextResponse.json(
-        { error: "No photos uploaded." },
-        { status: 400 }
-      );
+      return json({ error: "No photos uploaded." }, { status: 400 });
     }
 
-    const dataUrls = await Promise.all(files.slice(0, 3).map(fileToDataUrl));
+    // Limit to 3 photos
+    const selected = files.slice(0, 3);
 
+    // Guard against huge mobile photos causing serverless failures / empty responses
+    const MAX_MB_PER_IMAGE = 6;
+    for (const f of selected) {
+      const mb = (f as any).size / (1024 * 1024);
+      if (mb > MAX_MB_PER_IMAGE) {
+        return json(
+          { error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.` },
+          { status: 413 }
+        );
+      }
+    }
+
+    const dataUrls = await Promise.all(selected.map(fileToDataUrl));
+
+    // IMPORTANT: schema is ONLY the JSON schema body (no wrapper)
     const schema = {
       type: "object",
       additionalProperties: false,
@@ -95,7 +140,7 @@ export async function POST(req: Request) {
             {
               type: "input_text",
               text:
-                "You are an expert auto/marine upholstery trimmer. Analyze the photos and return ONLY valid JSON matching the provided schema. Be conservative and practical.",
+                "You are an expert auto/marine upholstery trimmer. Analyze the photos and return ONLY valid JSON matching the provided schema. Be conservative and practical. If uncertain, choose 'unknown' and explain in notes.",
             },
           ],
         },
@@ -119,21 +164,27 @@ export async function POST(req: Request) {
       },
     });
 
-    const raw = ai.output_text;
+    // Defensive: sometimes output_text can be empty if a tool message came back
+    const raw = (ai as any).output_text || "";
     let assessment: AiAssessment;
+
     try {
       assessment = JSON.parse(raw) as AiAssessment;
     } catch {
-      return NextResponse.json(
-        { error: "AI output parsing failed.", raw },
+      // Provide useful debug info back to the client
+      return json(
+        {
+          error: "AI output parsing failed.",
+          raw,
+        },
         { status: 502 }
       );
     }
 
-    // Original estimate from your pricing rules
+    // Pricing
     const estimate = estimateFromAssessment(assessment);
 
-    // Make sure all numeric fields exist and are numbers (prevents blank UI)
+    // Normalize to avoid blank UI values
     const safeEstimate = {
       ...estimate,
       laborHours: Number((estimate as any).laborHours) || 0,
@@ -149,6 +200,7 @@ export async function POST(req: Request) {
         : [],
     };
 
+    // Email
     const to = process.env.QUOTE_TO_EMAIL || "trimmer@maggioupholstery.com";
     const from = process.env.QUOTE_FROM_EMAIL || "onboarding@resend.dev";
 
@@ -190,16 +242,23 @@ export async function POST(req: Request) {
 
     if (process.env.RESEND_API_KEY) {
       try {
-        await resend.emails.send({ from, to, subject, html });
+        await resend.emails.send({
+          from,
+          to,
+          subject,
+          html,
+          // so you can just hit Reply in Gmail
+          replyTo: email ? email : undefined,
+        });
         emailSent = true;
       } catch (err) {
         console.error("Resend email failed:", err);
       }
     }
 
-    return NextResponse.json({ assessment, estimate: safeEstimate, emailSent });
+    return json({ assessment, estimate: safeEstimate, emailSent });
   } catch (e: any) {
-    return NextResponse.json(
+    return json(
       { error: e?.message || "Unknown error" },
       { status: 500 }
     );
