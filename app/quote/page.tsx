@@ -115,6 +115,17 @@ export default function QuotePage() {
 
   const assumptions: string[] = Array.isArray(est.assumptions) ? est.assumptions : [];
 
+  // ✅ Normalize assessment ONCE and use everywhere
+  const assessment = result?.assessment ?? {};
+
+  const materialSuggestions = String(
+    assessment.material_suggestions ?? assessment.materialSuggestions ?? ""
+  ).trim();
+
+  const repairExplained = String(
+    assessment.recommended_repair_explained ?? assessment.recommendedRepairExplained ?? ""
+  ).trim();
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto max-w-4xl px-4 py-10">
@@ -355,16 +366,35 @@ export default function QuotePage() {
                     <div className="text-lg font-semibold">AI Repair Recommendation</div>
 
                     <div className="mt-2 text-sm text-zinc-300">
-                      <span className="text-zinc-500">Damage:</span> {result.assessment?.damage}
+                      <span className="text-zinc-500">Damage:</span>{" "}
+                      {assessment.damage ?? "—"}
                     </div>
+
                     <div className="mt-1 text-sm text-zinc-300">
                       <span className="text-zinc-500">Recommended repair:</span>{" "}
-                      {result.assessment?.recommended_repair}
+                      {assessment.recommended_repair ?? "—"}
                     </div>
+
                     <div className="mt-1 text-sm text-zinc-300">
                       <span className="text-zinc-500">Material guess:</span>{" "}
-                      {result.assessment?.material_guess}
+                      {assessment.material_guess ?? "—"}
                     </div>
+
+                    {/* ✅ NEW: material suggestions */}
+                    {materialSuggestions && (
+                      <div className="mt-3 text-sm text-zinc-300">
+                        <div className="text-zinc-500">Material suggestions:</div>
+                        <div className="mt-1 whitespace-pre-wrap">{materialSuggestions}</div>
+                      </div>
+                    )}
+
+                    {/* ✅ NEW: repair process explanation */}
+                    {repairExplained && (
+                      <div className="mt-3 text-sm text-zinc-300">
+                        <div className="text-zinc-500">How we’d repair it:</div>
+                        <div className="mt-1 whitespace-pre-wrap">{repairExplained}</div>
+                      </div>
+                    )}
 
                     <div className="mt-3 text-xs text-zinc-500">
                       {assumptions.map((a: string, i: number) => (
