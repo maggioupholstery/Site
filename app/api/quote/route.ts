@@ -146,6 +146,11 @@ function json(data: any, init?: ResponseInit) {
   return NextResponse.json(data, init);
 }
 
+function normText(v: unknown, fallback: string) {
+  const s = String(v ?? "").trim();
+  return s.length ? s : fallback;
+}
+
 // Allow browser preflight (helps when anything ever calls this cross-origin)
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -158,12 +163,12 @@ export async function OPTIONS() {
   });
 }
 
-// Nice debug response if you open /api/quote in the browser
 export async function GET() {
   return json({
     ok: true,
     message:
       "Quote endpoint is alive. Send a POST multipart/form-data with fields: category,name,email,phone,notes and photos (1–3).",
+    version: "ai-v2-materials-and-process",
   });
 }
 
@@ -218,8 +223,12 @@ export async function POST(req: Request) {
           enum: ["vinyl", "leather", "marine_vinyl", "unknown"],
         },
 
-        // NEW
-        material_suggestions: { type: "string" },
+        // NEW: short, customer-friendly suggestions (2–4 options)
+        material_suggestions: {
+          type: "string",
+          description:
+            "2–4 material options + why. Mention marine-grade + UV thread for marine. Keep to 2–6 sentences.",
+        },
 
         damage: { type: "string" },
 
@@ -234,8 +243,12 @@ export async function POST(req: Request) {
           ],
         },
 
-        // NEW
-        recommended_repair_explained: { type: "string" },
+        // NEW: explain process in plain English
+        recommended_repair_explained: {
+          type: "string",
+          description:
+            "Explain the shop steps in plain English. 4–8 short sentences. No fluff.",
+        },
 
         complexity: { type: "string", enum: ["low", "medium", "high"] },
         notes: { type: "string" },
@@ -263,12 +276,14 @@ export async function POST(req: Request) {
             {
               type: "input_text",
               text:
-                "You are an expert auto/marine upholstery trimmer. Analyze the photos and return ONLY valid JSON matching the provided schema.\n\n" +
-                "Rules:\n" +
+                "You are an expert auto/marine upholstery trimmer.\n" +
+                "Return ONLY valid JSON matching the schema.\n\n" +
+                "Guidelines:\n" +
                 "- Be conservative and practical.\n" +
-                "- If uncertain, choose 'unknown' and explain what you'd need to confirm.\n" +
-                "- For recommended_repair_explained: explain the process step-by-step in plain English (remove cover, inspect foam, pattern, cut/sew, install, finish).\n" +
-                "- For material_suggestions: recommend 2–4 good options and why (durability, UV/mildew for marine, thread choice, match/texture).",
+                "- If uncertain, use 'unknown' and explain what photo/measurement is needed.\n" +
+                "- Avoid vague wording. Prefer specific upholstery terms.\n" +
+                "- recommended_repair_explained should describe what we physically do: remove cover, inspect foam, pattern, cut, sew, topstitch, add backing/foam as needed, reinstall, final fit.\n" +
+                "- material_suggestions: 2–4 options + why (durability/UV/mildew for marine, matching grain/color, thread choice like UV polyester for marine). Keep it customer-friendly.",
             },
           ],
         },
@@ -276,7 +291,7 @@ export async function POST(req: Request) {
           role: "user",
           content: [
             {
-              type: "input_text",
+              type: "input_text" as const,
               text: `Category selected: ${category}\nCustomer notes: ${notes || "(none)"}`,
             },
             ...dataUrls.map((url) => ({
@@ -305,7 +320,26 @@ export async function POST(req: Request) {
       return json({ error: "AI output parsing failed.", raw }, { status: 502 });
     }
 
-    const estimate = estimateFromAssessment(assessment);
+    // Fallbacks in case the model returns blank strings
+    const normalizedAssessment: AiAssessment = {
+      ...assessment,
+      item: normText(assessment.item, "Unknown item"),
+      damage: normText(assessment.damage, "Damage not clearly visible from photos."),
+      notes: normText(
+        assessment.notes,
+        "If you can, send a close-up of the damaged area and a wider shot showing the full part."
+      ),
+      material_suggestions: normText(
+        assessment.material_suggestions,
+        "If you want the closest match, we’ll recommend samples after seeing it in person. For marine, we typically suggest marine-grade vinyl with UV-resistant thread."
+      ),
+      recommended_repair_explained: normText(
+        assessment.recommended_repair_explained,
+        "We’ll inspect the area, confirm the best repair method, and proceed with a proper upholstery repair or recover as needed. Photos don’t always show foam/backing condition, so final steps may adjust after inspection."
+      ),
+    };
+
+    const estimate = estimateFromAssessment(normalizedAssessment);
 
     const safeEstimate = {
       ...estimate,
@@ -325,7 +359,7 @@ export async function POST(req: Request) {
     const to = process.env.QUOTE_TO_EMAIL || "trimmer@maggioupholstery.com";
     const from = process.env.QUOTE_FROM_EMAIL || "onboarding@resend.dev";
 
-    const subject = `New Photo Quote: ${assessment.category.toUpperCase()} • ${assessment.item} • $${safeEstimate.totalLow}–$${safeEstimate.totalHigh}`;
+    const subject = `New Photo Quote: ${normalizedAssessment.category.toUpperCase()} • ${normalizedAssessment.item} • $${safeEstimate.totalLow}–$${safeEstimate.totalHigh}`;
 
     const html =
       `<div style="font-family: ui-sans-serif,system-ui,-apple-system; line-height:1.45;">` +
@@ -333,17 +367,17 @@ export async function POST(req: Request) {
       `<p><b>Name:</b> ${esc(name)}<br/>` +
       `<b>Email:</b> ${esc(email)}<br/>` +
       `<b>Phone:</b> ${esc(phone)}<br/>` +
-      `<b>Category:</b> ${esc(assessment.category)}<br/>` +
-      `<b>Item:</b> ${esc(assessment.item)}</p>` +
+      `<b>Category:</b> ${esc(normalizedAssessment.category)}<br/>` +
+      `<b>Item:</b> ${esc(normalizedAssessment.item)}</p>` +
       `<hr/>` +
       `<h3>AI Assessment</h3>` +
-      `<p><b>Material guess:</b> ${esc(assessment.material_guess)}<br/>` +
-      `<b>Material suggestions:</b> ${esc(assessment.material_suggestions)}<br/>` +
-      `<b>Damage:</b> ${esc(assessment.damage)}<br/>` +
-      `<b>Recommended repair:</b> ${esc(assessment.recommended_repair)}<br/>` +
-      `<b>How we’d repair it:</b> ${esc(assessment.recommended_repair_explained)}<br/>` +
-      `<b>Complexity:</b> ${esc(assessment.complexity)}<br/>` +
-      `<b>Notes:</b> ${esc(assessment.notes)}</p>` +
+      `<p><b>Material guess:</b> ${esc(normalizedAssessment.material_guess)}<br/>` +
+      `<b>Material suggestions:</b> ${esc(normalizedAssessment.material_suggestions)}<br/>` +
+      `<b>Damage:</b> ${esc(normalizedAssessment.damage)}<br/>` +
+      `<b>Recommended repair:</b> ${esc(normalizedAssessment.recommended_repair)}<br/>` +
+      `<b>How we’d repair it:</b> ${esc(normalizedAssessment.recommended_repair_explained)}<br/>` +
+      `<b>Complexity:</b> ${esc(normalizedAssessment.complexity)}<br/>` +
+      `<b>Notes:</b> ${esc(normalizedAssessment.notes)}</p>` +
       `<hr/>` +
       `<h3>Base Estimate</h3>` +
       `<p><b>Total:</b> $${safeEstimate.totalLow} – $${safeEstimate.totalHigh}</p>` +
@@ -380,7 +414,12 @@ export async function POST(req: Request) {
       }
     }
 
-    return json({ assessment, estimate: safeEstimate, emailSent });
+    return json({
+      version: "ai-v2-materials-and-process",
+      assessment: normalizedAssessment,
+      estimate: safeEstimate,
+      emailSent,
+    });
   } catch (e: any) {
     return json({ error: e?.message || "Unknown error" }, { status: 500 });
   }
