@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { Resend } from "resend";
 
 export const runtime = "nodejs";
 
@@ -12,15 +13,11 @@ export type AiAssessment = {
   category: QuoteCategory;
   item: string;
 
-  // Keep for pricing logic
   material_guess: "vinyl" | "leather" | "marine_vinyl" | "unknown";
-
-  // customer-friendly recommendations + options
   material_suggestions: string;
 
   damage: string;
 
-  // Keep for pricing logic
   recommended_repair:
     | "stitch_repair"
     | "panel_replace"
@@ -28,7 +25,6 @@ export type AiAssessment = {
     | "foam_replace"
     | "unknown";
 
-  // explain the repair process in plain English
   recommended_repair_explained: string;
 
   complexity: "low" | "medium" | "high";
@@ -57,7 +53,6 @@ function clamp(n: number, lo: number, hi: number) {
 }
 
 export function estimateFromAssessment(a: AiAssessment): Estimate {
-  // Base labor hours
   let hours = 3.0;
 
   if (a.recommended_repair === "stitch_repair") hours = 1.5;
@@ -65,14 +60,12 @@ export function estimateFromAssessment(a: AiAssessment): Estimate {
   else if (a.recommended_repair === "panel_replace") hours = 3.5;
   else if (a.recommended_repair === "recover") hours = 5.5;
 
-  // Complexity multiplier
   let mult = 1.0;
   if (a.complexity === "medium") mult = 1.25;
   else if (a.complexity === "high") mult = 1.5;
 
   hours = clamp(hours * mult, 1.5, 10.0);
 
-  // Materials range
   let materialsLow = 60;
   let materialsHigh = 180;
 
@@ -84,13 +77,11 @@ export function estimateFromAssessment(a: AiAssessment): Estimate {
     materialsHigh = 320;
   }
 
-  // Category adjustments
   if (a.category === "marine") {
     materialsLow = Math.round(materialsLow * 1.15);
     materialsHigh = Math.round(materialsHigh * 1.2);
   }
 
-  // Item tweaks
   const itemLower = (a.item || "").toLowerCase();
   if (itemLower.includes("armrest")) {
     hours = clamp(hours * 0.75, 1.5, 7.0);
@@ -153,8 +144,6 @@ function normText(v: unknown, fallback: string) {
 
 /**
  * Extract base64 PNG from Responses API image_generation tool output.
- * Docs show: response.output[].type === "image_generation_call" and output.result is base64 string.
- * We also handle a couple of possible alternate shapes just in case.
  */
 function extractGeneratedImageBase64(resp: any): string | null {
   const out = resp?.output;
@@ -164,7 +153,6 @@ function extractGeneratedImageBase64(resp: any): string | null {
     if (item?.type === "image_generation_call") {
       if (typeof item?.result === "string" && item.result.trim()) return item.result.trim();
 
-      // Defensive fallbacks (in case SDK shape differs)
       const r = item?.result;
       if (r && typeof r === "object") {
         const maybe =
@@ -179,7 +167,7 @@ function extractGeneratedImageBase64(resp: any): string | null {
   return null;
 }
 
-// Allow browser preflight (helps when anything ever calls this cross-origin)
+// Allow browser preflight
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,
@@ -196,7 +184,7 @@ export async function GET() {
     ok: true,
     message:
       "Quote endpoint is alive. Send a POST multipart/form-data with fields: category,name,email,phone,notes and photos (1–3).",
-    version: "ai-v3-materials-process-preview",
+    version: "ai-v3-materials-process-preview+resend",
   });
 }
 
@@ -240,10 +228,7 @@ export async function POST(req: Request) {
         category: { type: "string", enum: ["auto", "marine", "motorcycle"] },
         item: { type: "string" },
 
-        material_guess: {
-          type: "string",
-          enum: ["vinyl", "leather", "marine_vinyl", "unknown"],
-        },
+        material_guess: { type: "string", enum: ["vinyl", "leather", "marine_vinyl", "unknown"] },
 
         material_suggestions: {
           type: "string",
@@ -280,7 +265,7 @@ export async function POST(req: Request) {
       ],
     } as const;
 
-    // --------- 1) Assessment (structured JSON) ----------
+    // --------- 1) Assessment ----------
     const ai = await openai.responses.create({
       model: "gpt-4o-mini",
       store: false,
@@ -305,7 +290,10 @@ export async function POST(req: Request) {
         {
           role: "user",
           content: [
-            { type: "input_text", text: `Category selected: ${category}\nCustomer notes: ${notes || "(none)"}` },
+            {
+              type: "input_text",
+              text: `Category selected: ${category}\nCustomer notes: ${notes || "(none)"}`,
+            },
             ...dataUrls.map((url) => ({
               type: "input_image" as const,
               image_url: url,
@@ -314,9 +302,7 @@ export async function POST(req: Request) {
           ],
         },
       ],
-      text: {
-        format: { type: "json_schema", name: "upholstery_assessment", schema },
-      },
+      text: { format: { type: "json_schema", name: "upholstery_assessment", schema } },
     });
 
     const raw = (ai as any).output_text || "";
@@ -380,7 +366,6 @@ export async function POST(req: Request) {
           `Make it look professionally reupholstered in ${materialWord}: tight fit, clean stitching, new-looking finish. ` +
           `DO NOT change the environment/background. DO NOT add logos or text. DO NOT redesign.`;
 
-        // IMPORTANT: use a mainline model to call the image_generation tool
         const imgResp = await openai.responses.create({
           model: "gpt-5",
           input: [
@@ -396,14 +381,8 @@ export async function POST(req: Request) {
         });
 
         const b64 = extractGeneratedImageBase64(imgResp);
-        if (b64) {
-          previewImageDataUrl = `data:image/png;base64,${b64}`;
-        } else {
-          // This is the #1 reason you see “Preview unavailable…”
-          previewError =
-            "Image tool returned no base64. This is usually caused by model/tool access restrictions (GPT Image org verification) or the request being blocked.";
-          console.error("Image generation returned no base64. Output:", imgResp?.output);
-        }
+        if (b64) previewImageDataUrl = `data:image/png;base64,${b64}`;
+        else previewError = "Image tool returned no base64 (blocked or access restricted).";
       } catch (err: any) {
         previewError = err?.message || "Preview image generation failed.";
         console.error("Preview image generation failed:", err);
@@ -426,16 +405,103 @@ export async function POST(req: Request) {
       assumptions: Array.isArray((estimate as any).assumptions) ? (estimate as any).assumptions : [],
     };
 
-    // (Email sending removed in your pasted version, so leaving it out here too)
-    // If you want it back, we can re-add it after preview works.
+    // --------- 4) Email (Resend) ----------
+    const resendApiKey = process.env.RESEND_API_KEY || "";
+    const to = process.env.QUOTE_TO_EMAIL || "";
+    const from = process.env.QUOTE_FROM_EMAIL || ""; // IMPORTANT: set this to a verified sender
+
+    let emailSent = false;
+    let emailError: string | null = null;
+    let emailId: string | null = null;
+
+    if (!resendApiKey) {
+      emailError = "RESEND_API_KEY is missing in server environment.";
+    } else if (!to) {
+      emailError = "QUOTE_TO_EMAIL is missing in server environment.";
+    } else if (!from) {
+      emailError =
+        "QUOTE_FROM_EMAIL is missing. Set it to a verified sender like 'Maggio Upholstery <no-reply@maggioupholstery.com>'.";
+    } else {
+      try {
+        const resend = new Resend(resendApiKey);
+
+        const subject = `New Photo Quote: ${normalizedAssessment.category.toUpperCase()} • ${normalizedAssessment.item} • $${safeEstimate.totalLow}–$${safeEstimate.totalHigh}`;
+
+        const html =
+          `<div style="font-family: ui-sans-serif,system-ui,-apple-system; line-height:1.45;">` +
+          `<h2>New Photo Quote</h2>` +
+          `<p><b>Name:</b> ${esc(name)}<br/>` +
+          `<b>Email:</b> ${esc(email)}<br/>` +
+          `<b>Phone:</b> ${esc(phone)}<br/>` +
+          `<b>Category:</b> ${esc(normalizedAssessment.category)}<br/>` +
+          `<b>Item:</b> ${esc(normalizedAssessment.item)}</p>` +
+          `<hr/>` +
+          `<h3>AI Assessment</h3>` +
+          `<p><b>Material guess:</b> ${esc(normalizedAssessment.material_guess)}<br/>` +
+          `<b>Material suggestions:</b> ${esc(normalizedAssessment.material_suggestions)}<br/>` +
+          `<b>Damage:</b> ${esc(normalizedAssessment.damage)}<br/>` +
+          `<b>Recommended repair:</b> ${esc(normalizedAssessment.recommended_repair)}<br/>` +
+          `<b>How we’d repair it:</b> ${esc(normalizedAssessment.recommended_repair_explained)}<br/>` +
+          `<b>Complexity:</b> ${esc(normalizedAssessment.complexity)}<br/>` +
+          `<b>Notes:</b> ${esc(normalizedAssessment.notes)}</p>` +
+          `<hr/>` +
+          `<h3>Base Estimate</h3>` +
+          `<p><b>Total:</b> $${safeEstimate.totalLow} – $${safeEstimate.totalHigh}</p>` +
+          `<ul>` +
+          `<li>Labor: ${safeEstimate.laborHours} hrs @ $${safeEstimate.laborRate}/hr = $${safeEstimate.laborSubtotal}</li>` +
+          `<li>Materials: $${safeEstimate.materialsLow} – $${safeEstimate.materialsHigh}</li>` +
+          `<li>Shop minimum: $${safeEstimate.shopMinimum}</li>` +
+          `</ul>` +
+          `<h4>Assumptions</h4>` +
+          `<ul>${safeEstimate.assumptions.map((a: string) => `<li>${esc(a)}</li>`).join("")}</ul>` +
+          `<hr/>` +
+          `<h3>Customer Notes</h3>` +
+          `<p>${esc(notes || "(none)")}</p>` +
+          `</div>`;
+
+        const resp = await resend.emails.send({
+          from,
+          to,
+          subject,
+          html,
+          replyTo: email ? email : undefined,
+        });
+
+        // Resend returns { data, error }
+        const maybeError = (resp as any)?.error;
+        const maybeData = (resp as any)?.data;
+
+        if (maybeError) {
+          emailError = maybeError?.message || String(maybeError);
+        } else {
+          emailSent = true;
+          emailId = maybeData?.id ?? null;
+        }
+      } catch (err: any) {
+        emailError = err?.message || "Resend send failed.";
+      }
+    }
 
     return json({
-      version: "ai-v3-materials-process-preview",
+      version: "ai-v3-materials-process-preview+resend",
       assessment: normalizedAssessment,
       estimate: safeEstimate,
-      emailSent: true, // keep your UI happy; change if you actually wire email
+
+      // email
+      emailSent,
+      emailError,
+      emailId,
+
+      // preview
       previewImageDataUrl,
-      previewError, // helpful for debugging in UI if you decide to show it
+      previewError,
+
+      // env debug (safe booleans)
+      debug: {
+        hasResendKey: Boolean(resendApiKey),
+        hasQuoteTo: Boolean(to),
+        hasQuoteFrom: Boolean(from),
+      },
     });
   } catch (e: any) {
     return json({ error: e?.message || "Unknown error" }, { status: 500 });
