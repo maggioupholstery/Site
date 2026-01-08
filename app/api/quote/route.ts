@@ -4,7 +4,7 @@ import {
   estimateFromAssessment,
   type AiAssessment,
   type QuoteCategory,
-} from "../../../lib/pricing";
+} from "../../../src/lib/pricing";
 
 export const runtime = "nodejs";
 
@@ -22,7 +22,7 @@ function esc(s: unknown) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
+    .replace(/>/g, "&lt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
@@ -170,10 +170,7 @@ export async function POST(req: Request) {
     try {
       assessment = JSON.parse(raw) as AiAssessment;
     } catch {
-      return json(
-        { error: "AI output parsing failed.", raw },
-        { status: 502 }
-      );
+      return json({ error: "AI output parsing failed.", raw }, { status: 502 });
     }
 
     // Pricing
@@ -206,56 +203,4 @@ export async function POST(req: Request) {
       `<h2>New Photo Quote</h2>` +
       `<p><b>Name:</b> ${esc(name)}<br/>` +
       `<b>Email:</b> ${esc(email)}<br/>` +
-      `<b>Phone:</b> ${esc(phone)}<br/>` +
-      `<b>Category:</b> ${esc(assessment.category)}<br/>` +
-      `<b>Item:</b> ${esc(assessment.item)}</p>` +
-      `<hr/>` +
-      `<h3>AI Assessment</h3>` +
-      `<p><b>Material guess:</b> ${esc(assessment.material_guess)}<br/>` +
-      `<b>Damage:</b> ${esc(assessment.damage)}<br/>` +
-      `<b>Recommended repair:</b> ${esc(assessment.recommended_repair)}<br/>` +
-      `<b>Complexity:</b> ${esc(assessment.complexity)}<br/>` +
-      `<b>Notes:</b> ${esc(assessment.notes)}</p>` +
-      `<hr/>` +
-      `<h3>Base Estimate</h3>` +
-      `<p><b>Total:</b> $${safeEstimate.totalLow} – $${safeEstimate.totalHigh}</p>` +
-      `<ul>` +
-      `<li>Labor: ${safeEstimate.laborHours} hrs @ $${safeEstimate.laborRate}/hr = $${safeEstimate.laborSubtotal}</li>` +
-      `<li>Materials: $${safeEstimate.materialsLow} – $${safeEstimate.materialsHigh}</li>` +
-      `<li>Shop minimum: $${safeEstimate.shopMinimum}</li>` +
-      `</ul>` +
-      `<h4>Assumptions</h4>` +
-      `<ul>${safeEstimate.assumptions
-        .map((a: string) => `<li>${esc(a)}</li>`)
-        .join("")}</ul>` +
-      `<hr/>` +
-      `<h3>Customer Notes</h3>` +
-      `<p>${esc(notes || "(none)")}</p>` +
-      `</div>`;
-
-    let emailSent = false;
-
-    if (process.env.RESEND_API_KEY) {
-      try {
-        const mod = await import("resend");
-        const resend = new mod.Resend(process.env.RESEND_API_KEY);
-
-        await resend.emails.send({
-          from,
-          to,
-          subject,
-          html,
-          replyTo: email ? email : undefined,
-        });
-
-        emailSent = true;
-      } catch (err) {
-        console.error("Resend email failed:", err);
-      }
-    }
-
-    return json({ assessment, estimate: safeEstimate, emailSent });
-  } catch (e: any) {
-    return json({ error: e?.message || "Unknown error" }, { status: 500 });
-  }
-}
+      `<b>Phone:</b> ${
