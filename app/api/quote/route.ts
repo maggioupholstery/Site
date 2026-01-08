@@ -11,14 +11,26 @@ export type QuoteCategory = "auto" | "marine" | "motorcycle";
 export type AiAssessment = {
   category: QuoteCategory;
   item: string;
+
+  // Keep for pricing logic
   material_guess: "vinyl" | "leather" | "marine_vinyl" | "unknown";
+
+  // NEW: customer-friendly recommendations + options
+  material_suggestions: string;
+
   damage: string;
+
+  // Keep for pricing logic
   recommended_repair:
     | "stitch_repair"
     | "panel_replace"
     | "recover"
     | "foam_replace"
     | "unknown";
+
+  // NEW: explain the repair process in plain English
+  recommended_repair_explained: string;
+
   complexity: "low" | "medium" | "high";
   notes: string;
 };
@@ -200,11 +212,17 @@ export async function POST(req: Request) {
       properties: {
         category: { type: "string", enum: ["auto", "marine", "motorcycle"] },
         item: { type: "string" },
+
         material_guess: {
           type: "string",
           enum: ["vinyl", "leather", "marine_vinyl", "unknown"],
         },
+
+        // NEW
+        material_suggestions: { type: "string" },
+
         damage: { type: "string" },
+
         recommended_repair: {
           type: "string",
           enum: [
@@ -215,6 +233,10 @@ export async function POST(req: Request) {
             "unknown",
           ],
         },
+
+        // NEW
+        recommended_repair_explained: { type: "string" },
+
         complexity: { type: "string", enum: ["low", "medium", "high"] },
         notes: { type: "string" },
       },
@@ -222,8 +244,10 @@ export async function POST(req: Request) {
         "category",
         "item",
         "material_guess",
+        "material_suggestions",
         "damage",
         "recommended_repair",
+        "recommended_repair_explained",
         "complexity",
         "notes",
       ],
@@ -239,7 +263,12 @@ export async function POST(req: Request) {
             {
               type: "input_text",
               text:
-                "You are an expert auto/marine upholstery trimmer. Analyze the photos and return ONLY valid JSON matching the provided schema. Be conservative and practical. If uncertain, choose 'unknown' and explain in notes.",
+                "You are an expert auto/marine upholstery trimmer. Analyze the photos and return ONLY valid JSON matching the provided schema.\n\n" +
+                "Rules:\n" +
+                "- Be conservative and practical.\n" +
+                "- If uncertain, choose 'unknown' and explain what you'd need to confirm.\n" +
+                "- For recommended_repair_explained: explain the process step-by-step in plain English (remove cover, inspect foam, pattern, cut/sew, install, finish).\n" +
+                "- For material_suggestions: recommend 2–4 good options and why (durability, UV/mildew for marine, thread choice, match/texture).",
             },
           ],
         },
@@ -309,8 +338,10 @@ export async function POST(req: Request) {
       `<hr/>` +
       `<h3>AI Assessment</h3>` +
       `<p><b>Material guess:</b> ${esc(assessment.material_guess)}<br/>` +
+      `<b>Material suggestions:</b> ${esc(assessment.material_suggestions)}<br/>` +
       `<b>Damage:</b> ${esc(assessment.damage)}<br/>` +
       `<b>Recommended repair:</b> ${esc(assessment.recommended_repair)}<br/>` +
+      `<b>How we’d repair it:</b> ${esc(assessment.recommended_repair_explained)}<br/>` +
       `<b>Complexity:</b> ${esc(assessment.complexity)}<br/>` +
       `<b>Notes:</b> ${esc(assessment.notes)}</p>` +
       `<hr/>` +
