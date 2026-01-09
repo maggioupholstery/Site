@@ -279,6 +279,18 @@ export default function QuotePage() {
 
   const previewImageDataUrl = String(result?.previewImageDataUrl ?? "").trim();
 
+  // ✅ FIX: Email status now reflects CUSTOMER RECEIPT (new response shape)
+  const customerReceiptSent =
+    Boolean(result?.email?.customerReceipt?.sent) ||
+    Boolean(result?.emailSent) || // legacy fallback
+    Boolean(result?.email?.sent); // legacy fallback
+
+  const customerReceiptError =
+    result?.email?.customerReceipt?.error ||
+    result?.emailError ||
+    result?.email?.error ||
+    null;
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto max-w-4xl px-4 py-10">
@@ -529,11 +541,16 @@ export default function QuotePage() {
                     <div className="rounded-2xl border border-zinc-800 bg-black/30 px-4 py-3">
                       <div className="text-xs text-zinc-500">Email status</div>
                       <div className="text-sm font-semibold text-zinc-100">
-                        {result.emailSent ? "Sent to shop ✅" : "Not sent ⚠️"}
+                        {customerReceiptSent ? "Sent ✅" : "Not sent ⚠️"}
                       </div>
-                      {!result.emailSent && (
+                      {!customerReceiptSent && (
                         <div className="text-xs text-zinc-500 mt-1">
                           We still generated your estimate. Please call or email if needed.
+                          {customerReceiptError ? (
+                            <div className="mt-1 text-[11px] opacity-80">
+                              Error: {String(customerReceiptError)}
+                            </div>
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -586,7 +603,6 @@ export default function QuotePage() {
                               setRenderError("Missing quoteId — please resubmit.");
                               return;
                             }
-                            // We don't have photoUrls anymore unless we re-use the ones saved in result
                             const saved = (result?.photoUrls || result?.photo_urls || []) as any[];
                             const photoUrls = Array.isArray(saved) ? saved.map(String).filter(Boolean) : [];
                             if (!photoUrls.length) {
