@@ -199,13 +199,15 @@ ${esc(JSON.stringify({ assessment, estimate }, null, 2))}
 
     // ✅ Return FAST (no preview here)
     return NextResponse.json({
-      ok: true,
-      quoteId,
-      emailSent,
-      assessment,
-      estimate,
-      previewImageDataUrl: "", // intentionally empty now
-    });
+  ok: true,
+  quoteId,
+  emailSent,
+  assessment,
+  estimate,
+  photoUrls, // ✅ add this so the client can retry render without re-uploading
+  previewImageDataUrl: "", // intentionally empty now
+});
+
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message || "Quote failed" },
