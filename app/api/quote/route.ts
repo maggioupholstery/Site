@@ -32,39 +32,127 @@ function toNumOrNull(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function buildEmail({
-  name,
-  email,
-  phone,
-  category,
-  quoteId,
-  notes,
-  photoUrls,
-  ai,
-}: {
+function getBaseUrl() {
+  // Prefer explicit base URL for building admin links
+  return (
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+    process.env.VERCEL_URL ||
+    ""
+  )
+    .toString()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+}
+
+function absoluteUrl(path: string) {
+  const base = getBaseUrl();
+  if (!base) return "";
+  return `https://${base}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
+function buildCustomerReceiptEmail(args: {
   name: string;
-  email: string;
+  customerEmail: string;
+  phone: string;
+  category: string;
+  quoteId: string;
+  notes: string;
+  estimateLine: string;
+  aiSummary: string;
+  scope: string;
+  materials: string;
+}) {
+  const subject = `We received your ${cleanLine(args.category)} quote request`;
+
+  const text = [
+    "Thanks — we received your request.",
+    "",
+    `Name: ${cleanLine(args.name)}`,
+    `Category: ${cleanLine(args.category)}`,
+    `Quote ID: ${cleanLine(args.quoteId)}`,
+    "",
+    "Your notes:",
+    args.notes?.trim() ? `“${cleanLine(args.notes)}”` : "(none)",
+    "",
+    "Preliminary estimate range:",
+    args.estimateLine,
+    "(Final pricing confirmed after inspection and material selection.)",
+    "",
+    "Repair plan (summary):",
+    `• ${cleanLine(args.aiSummary) || "—"}`,
+    "",
+    "Recommended scope:",
+    cleanLine(args.scope) || "—",
+    "",
+    "Material suggestions:",
+    cleanLine(args.materials) || "—",
+    "",
+    "We’ll follow up shortly to confirm details.",
+  ].join("\n");
+
+  const html = `
+  <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;">
+    <h2 style="margin:0 0 12px 0;">We received your quote request</h2>
+
+    <div style="margin:0 0 12px 0;">
+      Thanks — we received your request and photos. We’ll follow up shortly to confirm details.
+    </div>
+
+    <h3 style="margin:16px 0 6px 0;">Request details</h3>
+    <div><b>Name:</b> ${escHtml(args.name)}</div>
+    <div><b>Category:</b> ${escHtml(args.category)}</div>
+    <div><b>Quote ID:</b> ${escHtml(args.quoteId)}</div>
+
+    <h3 style="margin:16px 0 6px 0;">Your notes</h3>
+    <div>${args.notes?.trim() ? `“${escHtml(args.notes)}”` : "(none)"}</div>
+
+    <h3 style="margin:16px 0 6px 0;">Preliminary estimate range</h3>
+    <div style="font-size:16px;"><b>${escHtml(args.estimateLine)}</b></div>
+    <div style="color:#444; margin-top:4px;">Final pricing confirmed after inspection and material selection.</div>
+
+    <h3 style="margin:16px 0 6px 0;">Repair plan (summary)</h3>
+    <div>• ${escHtml(args.aiSummary || "—")}</div>
+
+    <h3 style="margin:16px 0 6px 0;">Recommended scope</h3>
+    <div>${escHtml(args.scope || "—")}</div>
+
+    <h3 style="margin:16px 0 6px 0;">Material suggestions</h3>
+    <div>${escHtml(args.materials || "—")}</div>
+
+    <div style="margin-top:16px;">
+      <b>Maggio Upholstery</b><br/>
+      Call/Text: (443) 280-9371
+    </div>
+  </div>`;
+
+  return { subject, text, html };
+}
+
+function buildShopLeadEmail(args: {
+  name: string;
+  customerEmail: string;
   phone: string;
   category: string;
   quoteId: string;
   notes: string;
   photoUrls: string[];
-  ai: {
-    ai_summary: string;
-    recommended_scope: string;
-    material_recommendation: string;
-    estimate_low: number | null;
-    estimate_high: number | null;
-  };
+  estimateLine: string;
+  aiSummary: string;
+  scope: string;
+  materials: string;
+  adminUrl: string;
 }) {
+  const subject = `NEW LEAD: ${cleanLine(args.category)} – ${cleanLine(args.name)}`;
+
   const photosBlockText =
-    photoUrls.length > 0
-      ? photoUrls.map((u, i) => `Photo ${i + 1}: ${u}`).join("\n")
+    args.photoUrls.length > 0
+      ? args.photoUrls.map((u, i) => `Photo ${i + 1}: ${u}`).join("\n")
       : "No photos attached.";
 
   const photosBlockHtml =
-    photoUrls.length > 0
-      ? photoUrls
+    args.photoUrls.length > 0
+      ? args.photoUrls
           .map(
             (u, i) =>
               `<div>Photo ${i + 1}: <a href="${escHtml(u)}">${escHtml(
@@ -74,68 +162,69 @@ function buildEmail({
           .join("")
       : `<div>No photos attached.</div>`;
 
-  const estimateLine =
-    ai.estimate_low != null && ai.estimate_high != null
-      ? `${money(ai.estimate_low)} – ${money(ai.estimate_high)}`
-      : ai.estimate_low != null
-      ? `${money(ai.estimate_low)}+`
-      : ai.estimate_high != null
-      ? `Up to ${money(ai.estimate_high)}`
-      : "TBD (needs review)";
-
-  const subject = `New ${cleanLine(category)} Photo Quote – ${cleanLine(name)}`;
-
   const text = [
-    "New Photo Quote Received",
+    "New Photo Quote Lead",
     "",
-    "Customer Information",
-    `Name: ${cleanLine(name)}`,
-    `Email: ${cleanLine(email)}`,
-    `Phone: ${cleanLine(phone)}`,
-    `Category: ${cleanLine(category)}`,
-    `Quote ID: ${cleanLine(quoteId)}`,
+    "Customer",
+    `Name: ${cleanLine(args.name)}`,
+    `Email: ${cleanLine(args.customerEmail)}`,
+    `Phone: ${cleanLine(args.phone)}`,
+    `Category: ${cleanLine(args.category)}`,
+    `Quote ID: ${cleanLine(args.quoteId)}`,
+    args.adminUrl ? `Admin: ${args.adminUrl}` : "",
     "",
-    "Customer Notes",
-    notes?.trim() ? `“${cleanLine(notes)}”` : "(none)",
+    "Notes",
+    args.notes?.trim() ? `“${cleanLine(args.notes)}”` : "(none)",
     "",
-    "AI Summary (internal helper)",
-    `• Project Type / Summary: ${cleanLine(ai.ai_summary) || "—"}`,
-    `• Recommended Scope: ${cleanLine(ai.recommended_scope) || "—"}`,
-    `• Materials: ${cleanLine(ai.material_recommendation) || "—"}`,
+    "Estimate Range (Preliminary)",
+    args.estimateLine,
     "",
-    "Estimated Range (Preliminary)",
-    estimateLine,
-    "(Final pricing subject to inspection + material selection.)",
+    "AI Summary",
+    `Damage: ${cleanLine(args.aiSummary) || "—"}`,
+    `Scope: ${cleanLine(args.scope) || "—"}`,
+    `Materials: ${cleanLine(args.materials) || "—"}`,
     "",
     "Photos",
     photosBlockText,
     "",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const html = `
   <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;">
-    <h2 style="margin:0 0 12px 0;">New Photo Quote Received</h2>
+    <h2 style="margin:0 0 12px 0;">New Photo Quote Lead</h2>
 
-    <h3 style="margin:16px 0 6px 0;">Customer Information</h3>
-    <div><b>Name:</b> ${escHtml(name)}</div>
-    <div><b>Email:</b> ${escHtml(email)}</div>
-    <div><b>Phone:</b> ${escHtml(phone)}</div>
-    <div><b>Category:</b> ${escHtml(category)}</div>
-    <div><b>Quote ID:</b> ${escHtml(quoteId)}</div>
+    <h3 style="margin:16px 0 6px 0;">Customer</h3>
+    <div><b>Name:</b> ${escHtml(args.name)}</div>
+    <div><b>Email:</b> <a href="mailto:${escHtml(args.customerEmail)}">${escHtml(
+    args.customerEmail
+  )}</a></div>
+    <div><b>Phone:</b> <a href="tel:${escHtml(args.phone)}">${escHtml(
+    args.phone
+  )}</a></div>
+    <div><b>Category:</b> ${escHtml(args.category)}</div>
+    <div><b>Quote ID:</b> ${escHtml(args.quoteId)}</div>
+    ${
+      args.adminUrl
+        ? `<div><b>Admin:</b> <a href="${escHtml(args.adminUrl)}">${escHtml(
+            args.adminUrl
+          )}</a></div>`
+        : ""
+    }
 
-    <h3 style="margin:16px 0 6px 0;">Customer Notes</h3>
-    <div>${notes?.trim() ? `“${escHtml(notes)}”` : "(none)"}</div>
+    <h3 style="margin:16px 0 6px 0;">Notes</h3>
+    <div>${args.notes?.trim() ? `“${escHtml(args.notes)}”` : "(none)"}</div>
 
-    <h3 style="margin:16px 0 6px 0;">AI Summary (internal helper)</h3>
+    <h3 style="margin:16px 0 6px 0;">Estimate Range (Preliminary)</h3>
+    <div style="font-size:16px;"><b>${escHtml(args.estimateLine)}</b></div>
+
+    <h3 style="margin:16px 0 6px 0;">AI Summary</h3>
     <ul style="margin:6px 0 0 20px;">
-      <li><b>Project Type / Summary:</b> ${escHtml(ai.ai_summary || "—")}</li>
-      <li><b>Recommended Scope:</b> ${escHtml(ai.recommended_scope || "—")}</li>
-      <li><b>Materials:</b> ${escHtml(ai.material_recommendation || "—")}</li>
+      <li><b>Damage:</b> ${escHtml(args.aiSummary || "—")}</li>
+      <li><b>Scope:</b> ${escHtml(args.scope || "—")}</li>
+      <li><b>Materials:</b> ${escHtml(args.materials || "—")}</li>
     </ul>
-
-    <h3 style="margin:16px 0 6px 0;">Estimated Range (Preliminary)</h3>
-    <div style="font-size:16px;"><b>${escHtml(estimateLine)}</b></div>
-    <div style="color:#444; margin-top:4px;">Final pricing subject to inspection + material selection.</div>
 
     <h3 style="margin:16px 0 6px 0;">Photos</h3>
     ${photosBlockHtml}
@@ -149,7 +238,7 @@ export async function POST(req: Request) {
     const body = await req.json();
 
     const name = cleanLine(body?.name);
-    const email = cleanLine(body?.email);
+    const customerEmail = cleanLine(body?.email);
     const phone = cleanLine(body?.phone);
     const category = cleanLine(body?.category);
     const notes = String(body?.notes ?? "");
@@ -157,7 +246,7 @@ export async function POST(req: Request) {
       ? body.photoUrls.map((u: any) => String(u)).filter(Boolean)
       : [];
 
-    if (!name || !email || !phone || !category) {
+    if (!name || !customerEmail || !phone || !category) {
       return NextResponse.json(
         { ok: false, error: "Missing required fields." },
         { status: 400 }
@@ -263,7 +352,7 @@ export async function POST(req: Request) {
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
          ai_summary, recommended_scope, material_recommendation, estimate_low, estimate_high)
       values
-        (${name}, ${email}, ${phone}, ${category}, ${notes},
+        (${name}, ${customerEmail}, ${phone}, ${category}, ${notes},
          ${JSON.stringify(photoUrls)}::jsonb,
          ${JSON.stringify({ assessment: assessmentOut, estimate: estimateOut })}::jsonb,
          ${normalized.ai_summary},
@@ -276,72 +365,96 @@ export async function POST(req: Request) {
 
     const quoteId = inserted.rows?.[0]?.id;
 
-    // --- Email send (handle ALL Resend shapes) ---
-    const { subject, text, html } = buildEmail({
+    const estimateLine =
+      normalized.estimate_low != null && normalized.estimate_high != null
+        ? `${money(normalized.estimate_low)} – ${money(normalized.estimate_high)}`
+        : "TBD (needs review)";
+
+    const adminUrl = absoluteUrl(`/admin/quotes/${quoteId}`);
+
+    // --- Email: customer receipt (NO admin/render links) ---
+    const customerReceipt = buildCustomerReceiptEmail({
       name,
-      email,
+      customerEmail,
+      phone,
+      category,
+      quoteId,
+      notes,
+      estimateLine,
+      aiSummary: normalized.ai_summary,
+      scope: normalized.recommended_scope,
+      materials: normalized.material_recommendation,
+    });
+
+    // --- Email: shop lead (WITH admin link + photo links) ---
+    const shopLead = buildShopLeadEmail({
+      name,
+      customerEmail,
       phone,
       category,
       quoteId,
       notes,
       photoUrls,
-      ai: normalized,
+      estimateLine,
+      aiSummary: normalized.ai_summary,
+      scope: normalized.recommended_scope,
+      materials: normalized.material_recommendation,
+      adminUrl,
     });
 
-    const toEmail = process.env.QUOTE_INBOX_TO || "jdmaggio@gmail.com";
     const fromEmail =
       process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
+    const shopTo = "maggioupholstery@gmail.com";
 
-    let resendRaw: any = null;
-    let emailId: string | null = null;
-    let emailError: any = null;
+    // send both, independently, so one failing doesn’t block the other
+    const results: any = {
+      customerReceipt: { sent: false, id: null, error: null },
+      shopLead: { sent: false, id: null, error: null },
+    };
 
+    // 1) Customer receipt
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
-        to: [toEmail],
-        subject,
-        text,
-        html,
-        replyTo: email,
+        to: [customerEmail],
+        subject: customerReceipt.subject,
+        text: customerReceipt.text,
+        html: customerReceipt.html,
       });
-
-      resendRaw = r;
-
-      emailId = r?.data?.id ?? r?.id ?? null;
-      emailError = r?.error ?? null;
+      const id = r?.data?.id ?? r?.id ?? null;
+      results.customerReceipt = { sent: Boolean(id), id, error: r?.error ?? null };
     } catch (e: any) {
-      resendRaw = { thrown: true, message: e?.message || String(e) };
-      emailError = e?.message || String(e);
+      results.customerReceipt = {
+        sent: false,
+        id: null,
+        error: e?.message || String(e),
+      };
     }
 
-    // Sent if we got an id (provider accepted it)
-    const emailSent = Boolean(emailId);
-
-    // ✅ NEW: persist email status to DB so admin matches user view
-    // (Make sure you ran the ALTER TABLE step to add these columns.)
+    // 2) Shop lead (reply-to = customer)
     try {
-      await sql`
-        update quotes
-        set email_sent = ${emailSent},
-            email_id = ${emailId},
-            email_error = ${emailError ? String(emailError) : null}
-        where id = ${quoteId}
-      `;
+      const r: any = await resend.emails.send({
+        from: fromEmail,
+        to: [shopTo],
+        subject: shopLead.subject,
+        text: shopLead.text,
+        html: shopLead.html,
+        replyTo: customerEmail,
+      });
+      const id = r?.data?.id ?? r?.id ?? null;
+      results.shopLead = { sent: Boolean(id), id, error: r?.error ?? null };
     } catch (e: any) {
-      // Don't fail the user flow if this update can't run yet (e.g., columns not added).
-      console.warn("Could not update email status in DB:", e?.message || e);
+      results.shopLead = {
+        sent: false,
+        id: null,
+        error: e?.message || String(e),
+      };
     }
 
     return NextResponse.json({
       ok: true,
       quoteId,
-      email: {
-        sent: emailSent,
-        id: emailId,
-        error: emailError,
-        provider: resendRaw, // remove later when you're done debugging
-      },
+      email: results,
       assessment: assessmentOut,
       estimate: estimateOut,
       normalized,
