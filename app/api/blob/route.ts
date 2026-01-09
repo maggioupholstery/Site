@@ -1,45 +1,48 @@
 import { NextResponse } from "next/server";
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { handleUpload } from "@vercel/blob/client";
 
 export const runtime = "nodejs";
 
-export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await request.json()) as HandleUploadBody;
-
+export async function POST(req: Request): Promise<Response> {
   try {
-    const jsonResponse = await handleUpload({
+    const body = await req.json();
+
+    const response = await handleUpload({
       body,
-      request,
+      request: req,
+
       onBeforeGenerateToken: async (pathname, clientPayload) => {
-        // Lock this down: images only
-        // You can also validate clientPayload here if you want
+        // Optional validation
+        if (!pathname.startsWith("quotes/")) {
+          throw new Error("Invalid upload path");
+        }
+
         return {
-          allowedContentTypes: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"],
-          // keep reasonable; Blob can handle big, but don’t invite abuse
-          maximumSizeInBytes: 12 * 1024 * 1024, // 12MB
-          tokenPayload: JSON.stringify({
-            pathname,
-            clientPayload: clientPayload ?? null,
-          }),
+          allowedContentTypes: ["image/jpeg", "image/png", "image/webp"],
+          tokenPayload: clientPayload,
         };
       },
+
       onUploadCompleted: async ({ blob, tokenPayload }) => {
-        // Optional: log or store blob.url in DB
+        // NOTE:
+        // PutBlobResult does NOT include `size` in current typings
+        // Do NOT reference blob.size here
+
         console.log("Blob upload completed:", {
           url: blob.url,
           pathname: blob.pathname,
-          size: blob.size,
           contentType: blob.contentType,
           tokenPayload,
         });
       },
     });
 
-    return NextResponse.json(jsonResponse);
-  } catch (error: any) {
+    return NextResponse.json(response);
+  } catch (err: any) {
+    console.error("Blob upload error:", err);
     return NextResponse.json(
-      { error: error?.message || "Blob upload failed" },
-      { status: 400 }
+      { error: err?.message || "Blob upload failed" },
+      { status: 500 }
     );
   }
 }
