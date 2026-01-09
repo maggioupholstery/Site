@@ -164,6 +164,7 @@ export async function POST(req: Request) {
       );
     }
 
+    // --- OpenAI ---
     const prompt = {
       category,
       notes,
@@ -218,7 +219,6 @@ export async function POST(req: Request) {
         ? laborSubtotal + materialsHigh
         : null);
 
-    // apply shop minimum if present
     if (shopMinimum != null) {
       if (totalLow != null) totalLow = Math.max(totalLow, shopMinimum);
       if (totalHigh != null) totalHigh = Math.max(totalHigh, shopMinimum);
@@ -257,6 +257,7 @@ export async function POST(req: Request) {
       estimate_high: totalHigh,
     };
 
+    // --- DB insert ---
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
@@ -275,7 +276,7 @@ export async function POST(req: Request) {
 
     const quoteId = inserted.rows?.[0]?.id;
 
-    // --- send email (robust status reporting) ---
+    // --- Email send (handle ALL Resend shapes) ---
     const { subject, text, html } = buildEmail({
       name,
       email,
@@ -291,9 +292,9 @@ export async function POST(req: Request) {
     const fromEmail =
       process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
 
+    let resendRaw: any = null;
     let emailId: string | null = null;
     let emailError: any = null;
-    let emailSent = false;
 
     try {
       const r: any = await resend.emails.send({
@@ -305,15 +306,22 @@ export async function POST(req: Request) {
         replyTo: email,
       });
 
-      emailId = r?.data?.id ?? null;
-      emailError = r?.error ?? null;
+      resendRaw = r;
 
-      // Sent = we got an id AND no provider error
-      emailSent = Boolean(emailId) && !emailError;
+      // Accept both SDK return shapes:
+      // - { data: { id } }
+      // - { id }
+      emailId = r?.data?.id ?? r?.id ?? null;
+
+      // Some SDK versions include error as r.error, others throw.
+      emailError = r?.error ?? null;
     } catch (e: any) {
+      resendRaw = { thrown: true, message: e?.message || String(e) };
       emailError = e?.message || String(e);
-      emailSent = false;
     }
+
+    // ✅ We mark sent if we got an id (that means provider accepted the message)
+    const emailSent = Boolean(emailId);
 
     return NextResponse.json({
       ok: true,
@@ -322,6 +330,8 @@ export async function POST(req: Request) {
         sent: emailSent,
         id: emailId,
         error: emailError,
+        // super helpful while we’re debugging; remove later
+        provider: resendRaw,
       },
       assessment: assessmentOut,
       estimate: estimateOut,
