@@ -83,9 +83,11 @@ export default function QuotePage() {
 
     setLoading(true);
     try {
+      // 1) Upload to Blob
       const blobs = await uploadPhotosToBlob(files);
       const photoUrls = blobs.map((b) => b.url);
 
+      // 2) Send URLs to API
       const res = await fetch("/api/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -102,13 +104,14 @@ export default function QuotePage() {
       const { rawText, json } = await safeReadJson(res);
 
       if (!res.ok) {
-        throw new Error(
+        const apiMsg =
           (json as any)?.error ||
-            (json as any)?.message ||
-            rawText ||
-            `Quote failed (HTTP ${res.status})`
-        );
+          (json as any)?.message ||
+          (rawText ? rawText.slice(0, 180) : "");
+        throw new Error(apiMsg || `Quote failed (HTTP ${res.status}).`);
       }
+
+      if (!json) throw new Error("Server returned an empty or non-JSON response. Please try again.");
 
       setResult(json);
 
@@ -122,94 +125,357 @@ export default function QuotePage() {
     }
   }
 
+  // Normalize estimate fields
   const est = result?.estimate || {};
-  const totalLow = Number(est.totalLow ?? 0);
-  const totalHigh = Number(est.totalHigh ?? 0);
-  const laborHours = Number(est.laborHours ?? 0);
-  const laborRate = Number(est.laborRate ?? 0);
-  const laborSubtotal = Number(est.laborSubtotal ?? 0);
-  const materialsLow = Number(est.materialsLow ?? 0);
-  const materialsHigh = Number(est.materialsHigh ?? 0);
-  const shopMinimum = Number(est.shopMinimum ?? 0);
+  const totalLow = Number(est.totalLow ?? est.total_low ?? 0);
+  const totalHigh = Number(est.totalHigh ?? est.total_high ?? 0);
+
+  const laborHours = Number(est.laborHours ?? est.labor_hours ?? 0);
+  const laborRate = Number(est.laborRate ?? est.labor_rate ?? 0);
+  const laborSubtotal = Number(est.laborSubtotal ?? est.labor_subtotal ?? 0);
+
+  const materialsLow = Number(est.materialsLow ?? est.materials_low ?? 0);
+  const materialsHigh = Number(est.materialsHigh ?? est.materials_high ?? 0);
+
+  const shopMinimum = Number(est.shopMinimum ?? est.shop_minimum ?? 0);
+
   const assumptions: string[] = Array.isArray(est.assumptions) ? est.assumptions : [];
 
   const assessment = result?.assessment ?? {};
+  const materialSuggestions = String(
+    assessment.material_suggestions ?? assessment.materialSuggestions ?? ""
+  ).trim();
+  const repairExplained = String(
+    assessment.recommended_repair_explained ?? assessment.recommendedRepairExplained ?? ""
+  ).trim();
+
   const previewImageDataUrl = String(result?.previewImageDataUrl ?? "").trim();
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto max-w-4xl px-4 py-10">
-        <h1 className="text-4xl font-semibold tracking-tight">Photo Quote</h1>
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">Photo Quote</h1>
+        <p className="mt-2 text-zinc-400">
+          Add up to <span className="text-zinc-200 font-semibold">3 photos</span> (wide + close-up).
+          We’ll generate a repair recommendation and a base estimate.
+        </p>
 
-        <Card className="mt-6 rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-          <CardContent className="p-6 space-y-4">
-            {/* FORM (unchanged) */}
-            {/* ... your form remains exactly as before ... */}
-          </CardContent>
-        </Card>
+        <div className="mt-6 grid grid-cols-1 gap-5">
+          <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
+            <CardContent className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <label className="text-sm">
+                  <div className="text-zinc-300 mb-1">Type</div>
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value as QuoteCategory)}
+                    className={fieldClass}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="marine">Marine</option>
+                    <option value="motorcycle">Motorcycle</option>
+                  </select>
+                </label>
 
-        {result && (
-          <div ref={resultsRef} className="mt-6">
-            <Card className="rounded-[2rem] border-zinc-800 bg-gradient-to-b from-zinc-900/70 to-zinc-950/70">
-              <CardContent className="p-6 space-y-6">
-                <div>
-                  <div className="text-sm text-zinc-300">Estimated total range</div>
-                  <div className="text-4xl font-semibold text-white">
-                    ${totalLow} – ${totalHigh}
+                <label className="text-sm">
+                  <div className="text-zinc-300 mb-1">Name</div>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className={fieldClass}
+                    placeholder="Your name"
+                  />
+                </label>
+
+                <label className="text-sm">
+                  <div className="text-zinc-300 mb-1">Phone</div>
+                  <input
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className={fieldClass}
+                    placeholder="(443) 280-9371"
+                  />
+                </label>
+              </div>
+
+              <label className="text-sm">
+                <div className="text-zinc-300 mb-1">Email</div>
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className={fieldClass}
+                  placeholder="you@email.com"
+                />
+              </label>
+
+              <label className="text-sm">
+                <div className="text-zinc-300 mb-1">Notes</div>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className={`${fieldClass} min-h-[96px]`}
+                  placeholder="Where is the damage? Any preference (vinyl/leather), color match needs, etc."
+                />
+              </label>
+
+              {/* Photo controls */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm text-zinc-300">
+                    Photos <span className="text-zinc-500">(max 3)</span>
                   </div>
+                  <div className="text-xs text-zinc-500">{files.length}/3 selected</div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
-                    <div className="text-xs text-zinc-400">Labor</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-100">
-                      {laborHours} hrs @ ${laborRate}/hr
-                    </div>
-                    <div className="text-xs text-zinc-300 mt-1">
-                      Subtotal: ${laborSubtotal}
-                    </div>
-                  </div>
+                <input
+                  ref={cameraRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const list = Array.from(e.target.files || []);
+                    if (list.length) addFiles([list[0]]);
+                    if (e.currentTarget) e.currentTarget.value = "";
+                  }}
+                  className="hidden"
+                />
+                <input
+                  ref={uploadRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => {
+                    const list = Array.from(e.target.files || []);
+                    addFiles(list);
+                    if (e.currentTarget) e.currentTarget.value = "";
+                  }}
+                  className="hidden"
+                />
 
-                  <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
-                    <div className="text-xs text-zinc-400">Materials</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-100">
-                      ${materialsLow} – ${materialsHigh}
-                    </div>
-                    <div className="text-xs text-zinc-300 mt-1">
-                      Based on material & scope
-                    </div>
-                  </div>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <Button
+                    type="button"
+                    className="rounded-2xl h-11"
+                    disabled={files.length >= 3 || loading}
+                    onClick={() => cameraRef.current?.click()}
+                  >
+                    Take Photo {files.length < 3 ? `(${files.length + 1}/3)` : ""}
+                  </Button>
 
-                  <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
-                    <div className="text-xs text-zinc-400">Shop Minimum</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-100">
-                      ${shopMinimum}
-                    </div>
-                    <div className="text-xs text-zinc-300 mt-1">
-                      Applies if small repair
-                    </div>
-                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
+                    disabled={files.length >= 3 || loading}
+                    onClick={() => uploadRef.current?.click()}
+                  >
+                    Upload From Library
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-2xl h-11 border-zinc-800 bg-transparent text-zinc-200 hover:bg-zinc-900"
+                    disabled={loading}
+                    onClick={() => {
+                      setFiles([]);
+                      setError(null);
+                      setResult(null);
+                    }}
+                  >
+                    Clear Photos
+                  </Button>
                 </div>
 
-                {previewImageDataUrl && (
-                  <div className="rounded-2xl overflow-hidden border border-zinc-900">
-                    <img
-                      src={previewImageDataUrl}
-                      alt="AI restored preview"
-                      className="w-full h-auto object-cover"
-                    />
-                  </div>
-                )}
-
-                <div className="text-xs text-zinc-400">
-                  {assumptions.map((a, i) => (
-                    <div key={i}>• {a}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {previews.map((src, i) => (
+                    <div
+                      key={i}
+                      className="relative overflow-hidden rounded-2xl border border-zinc-900 bg-black/30"
+                      style={{ aspectRatio: "4 / 3" }}
+                    >
+                      <img
+                        src={src}
+                        alt={`Upload preview ${i + 1}`}
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeFile(i)}
+                        className="absolute top-2 right-2 rounded-xl bg-black/70 px-2 py-1 text-xs text-white hover:bg-black"
+                        aria-label="Remove photo"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+              </div>
+
+              {error && <div className="text-sm text-red-300">{error}</div>}
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-1">
+                <Button onClick={onSubmit} disabled={loading} className="rounded-2xl h-11">
+                  {loading ? "Uploading + analyzing..." : "Get AI Estimate"}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
+                  disabled={loading}
+                  onClick={() => {
+                    setNotes("");
+                    setResult(null);
+                    setError(null);
+                  }}
+                >
+                  Reset Notes / Result
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Results */}
+          {result && (
+            <div ref={resultsRef}>
+              <Card className="rounded-[2rem] border-zinc-800 bg-gradient-to-b from-zinc-900/70 to-zinc-950/70 overflow-hidden">
+                <CardContent className="p-6 space-y-4">
+                  <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                    <div>
+                      <div className="text-sm text-zinc-200/90">Estimated total range</div>
+                      <div className="text-3xl md:text-4xl font-semibold tracking-tight text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)]">
+                        ${totalLow} – ${totalHigh}
+                      </div>
+                      <div className="text-xs text-zinc-500 mt-1">
+                        Includes labor + estimated materials (final confirmed after inspection)
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-800 bg-black/30 px-4 py-3">
+                      <div className="text-xs text-zinc-500">Email status</div>
+                      <div className="text-sm font-semibold text-zinc-100">
+                        {result.emailSent ? "Sent to shop ✅" : "Not sent ⚠️"}
+                      </div>
+                      {!result.emailSent && (
+                        <div className="text-xs text-zinc-500 mt-1">
+                          We still generated your estimate. Please call or email if needed.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Preview */}
+                  <div className="rounded-2xl border border-zinc-900 bg-gradient-to-b from-black/50 to-black/25 p-4">
+                    <div className="flex items-end justify-between gap-3">
+                      <div className="text-lg font-semibold text-zinc-100">Restored Preview</div>
+                      <div className="text-xs text-zinc-300">Concept only</div>
+                    </div>
+
+                    <div className="mt-2 text-xs text-zinc-300">
+                      This is an AI-generated “after” preview based on your photo. Final materials,
+                      color match, and stitching details are confirmed after inspection and sample
+                      approval.
+                    </div>
+
+                    {previewImageDataUrl ? (
+                      <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-900 bg-black/30">
+                        <img
+                          src={previewImageDataUrl}
+                          alt="AI restored preview"
+                          className="w-full h-auto object-cover"
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-sm text-zinc-200">
+                        Preview unavailable for this submission. (We still generated your estimate.)
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ✅ Contrast-fixed cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
+                      <div className="text-xs text-zinc-400">Labor</div>
+                      <div className="mt-1 text-sm font-semibold text-zinc-100">
+                        {laborHours} hrs @ ${laborRate}/hr
+                      </div>
+                      <div className="text-xs text-zinc-300 mt-1">Subtotal: ${laborSubtotal}</div>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
+                      <div className="text-xs text-zinc-400">Materials</div>
+                      <div className="mt-1 text-sm font-semibold text-zinc-100">
+                        ${materialsLow} – ${materialsHigh}
+                      </div>
+                      <div className="text-xs text-zinc-300 mt-1">
+                        Based on material guess & scope
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
+                      <div className="text-xs text-zinc-400">Shop Minimum</div>
+                      <div className="mt-1 text-sm font-semibold text-zinc-100">${shopMinimum}</div>
+                      <div className="text-xs text-zinc-300 mt-1">Applies if small repair</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
+                    <div className="text-lg font-semibold">AI Repair Recommendation</div>
+
+                    <div className="mt-2 text-sm text-zinc-300">
+                      <span className="text-zinc-500">Damage:</span>{" "}
+                      {assessment.damage ?? "—"}
+                    </div>
+
+                    <div className="mt-1 text-sm text-zinc-300">
+                      <span className="text-zinc-500">Recommended repair:</span>{" "}
+                      {assessment.recommended_repair ?? "—"}
+                    </div>
+
+                    <div className="mt-1 text-sm text-zinc-300">
+                      <span className="text-zinc-500">Material guess:</span>{" "}
+                      {assessment.material_guess ?? "—"}
+                    </div>
+
+                    {materialSuggestions && (
+                      <div className="mt-3 text-sm text-zinc-300">
+                        <div className="text-zinc-500">Material suggestions:</div>
+                        <div className="mt-1 whitespace-pre-wrap">{materialSuggestions}</div>
+                      </div>
+                    )}
+
+                    {repairExplained && (
+                      <div className="mt-3 text-sm text-zinc-300">
+                        <div className="text-zinc-500">How we’d repair it:</div>
+                        <div className="mt-1 whitespace-pre-wrap">{repairExplained}</div>
+                      </div>
+                    )}
+
+                    <div className="mt-3 text-xs text-zinc-500">
+                      {assumptions.map((a: string, i: number) => (
+                        <div key={i}>• {a}</div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Button className="rounded-2xl h-11" asChild>
+                      <a href="tel:+14432809371">Call (443) 280-9371</a>
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
+                      asChild
+                    >
+                      <a href="mailto:trimmer@maggioupholstery.com">Email Photos</a>
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
