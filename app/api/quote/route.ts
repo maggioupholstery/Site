@@ -308,20 +308,30 @@ export async function POST(req: Request) {
 
       resendRaw = r;
 
-      // Accept both SDK return shapes:
-      // - { data: { id } }
-      // - { id }
       emailId = r?.data?.id ?? r?.id ?? null;
-
-      // Some SDK versions include error as r.error, others throw.
       emailError = r?.error ?? null;
     } catch (e: any) {
       resendRaw = { thrown: true, message: e?.message || String(e) };
       emailError = e?.message || String(e);
     }
 
-    // ✅ We mark sent if we got an id (that means provider accepted the message)
+    // Sent if we got an id (provider accepted it)
     const emailSent = Boolean(emailId);
+
+    // ✅ NEW: persist email status to DB so admin matches user view
+    // (Make sure you ran the ALTER TABLE step to add these columns.)
+    try {
+      await sql`
+        update quotes
+        set email_sent = ${emailSent},
+            email_id = ${emailId},
+            email_error = ${emailError ? String(emailError) : null}
+        where id = ${quoteId}
+      `;
+    } catch (e: any) {
+      // Don't fail the user flow if this update can't run yet (e.g., columns not added).
+      console.warn("Could not update email status in DB:", e?.message || e);
+    }
 
     return NextResponse.json({
       ok: true,
@@ -330,8 +340,7 @@ export async function POST(req: Request) {
         sent: emailSent,
         id: emailId,
         error: emailError,
-        // super helpful while we’re debugging; remove later
-        provider: resendRaw,
+        provider: resendRaw, // remove later when you're done debugging
       },
       assessment: assessmentOut,
       estimate: estimateOut,
