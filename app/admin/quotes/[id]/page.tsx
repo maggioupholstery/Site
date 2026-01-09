@@ -33,19 +33,30 @@ function toArray(x: any): string[] {
   return [];
 }
 
-export default async function AdminQuoteDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const id = clean(params?.id);
+function fmtBool(v: any) {
+  if (v === true) return "Yes ✅";
+  if (v === false) return "No ⚠️";
+  return "—";
+}
+
+export default async function AdminQuoteDetailPage(props: any) {
+  // ✅ Next 15+ may pass params as a Promise. Handle both.
+  const resolvedParams =
+    props?.params && typeof props.params?.then === "function"
+      ? await props.params
+      : props?.params;
+
+  const id = clean(resolvedParams?.id);
 
   let row: any = null;
   let diag: any = {
+    rawParamsType: props?.params ? typeof props.params : "none",
+    paramsIsPromise: Boolean(props?.params && typeof props.params?.then === "function"),
     id,
     isUuid: isUuid(id),
     step: "start",
     error: null,
+    urlHint: `/admin/quotes/${id || ""}`,
   };
 
   if (!id) {
@@ -73,7 +84,9 @@ export default async function AdminQuoteDetailPage({
   const createdAt = row?.created_at ?? row?.createdAt ?? null;
 
   const photoUrls =
-    toArray(row?.photo_urls).length > 0 ? toArray(row?.photo_urls) : toArray(row?.files);
+    toArray(row?.photo_urls).length > 0
+      ? toArray(row?.photo_urls)
+      : toArray(row?.files);
 
   const aiSummary = clean(row?.ai_summary);
   const scope = clean(row?.recommended_scope);
@@ -85,8 +98,11 @@ export default async function AdminQuoteDetailPage({
   const leadEmailSent =
     row?.lead_email_sent ?? row?.leadEmailSent ?? row?.email_sent ?? row?.emailSent ?? null;
 
-  const receiptEmailSent = row?.receipt_email_sent ?? row?.receiptEmailSent ?? null;
-  const renderEmailSent = row?.render_email_sent ?? row?.renderEmailSent ?? null;
+  const receiptEmailSent =
+    row?.receipt_email_sent ?? row?.receiptEmailSent ?? null;
+
+  const renderEmailSent =
+    row?.render_email_sent ?? row?.renderEmailSent ?? null;
 
   const previewImageUrl = clean(row?.preview_image_url);
   const previewImageDataUrl = clean(row?.preview_image_data_url);
@@ -97,9 +113,7 @@ export default async function AdminQuoteDetailPage({
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-sm text-zinc-400">Admin</div>
-            <h1 className="text-2xl md:text-3xl font-semibold">
-              Quote Detail
-            </h1>
+            <h1 className="text-2xl md:text-3xl font-semibold">Quote Detail</h1>
             <div className="mt-1 text-sm text-zinc-400">
               ID: <span className="text-zinc-200">{id || "—"}</span>
             </div>
@@ -113,14 +127,19 @@ export default async function AdminQuoteDetailPage({
           </Link>
         </div>
 
-        {/* ✅ Diagnostics: if you still see 404 after deploying THIS file,
-            then the route isn't being matched at all (middleware/build/config). */}
+        {/* Diagnostics (temporary) */}
         <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
           <div className="text-lg font-semibold">Diagnostics</div>
-          <div className="mt-2 text-sm text-zinc-300">
+          <div className="mt-2 text-sm text-zinc-300 space-y-1">
             <div>
               <span className="text-zinc-400">Step:</span>{" "}
               <span className="text-zinc-100 font-semibold">{diag.step}</span>
+            </div>
+            <div>
+              <span className="text-zinc-400">paramsIsPromise:</span>{" "}
+              <span className="text-zinc-100 font-semibold">
+                {String(diag.paramsIsPromise)}
+              </span>
             </div>
             <div>
               <span className="text-zinc-400">UUID valid:</span>{" "}
@@ -129,24 +148,19 @@ export default async function AdminQuoteDetailPage({
               </span>
             </div>
             {diag.error ? (
-              <div className="mt-2 text-red-300">
+              <div className="text-red-300">
                 <span className="text-zinc-400">DB error:</span> {String(diag.error)}
               </div>
             ) : null}
-            <div className="mt-2 text-xs text-zinc-500">
-              If this page still shows 404 in production after deploy, then this file
-              is not being reached (routing/middleware/static export issue).
-            </div>
           </div>
         </div>
 
-        {/* If no row, show friendly message (NOT 404) */}
         {!row ? (
           <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
             <div className="text-lg font-semibold">Quote Not Found in DB</div>
             <div className="mt-2 text-sm text-zinc-400">
-              The route is working. The database lookup returned no row for this ID.
-              (Or the query errored—see diagnostics above.)
+              The route is working. Either the DB lookup returned no row for this ID,
+              or the query errored (see diagnostics above).
             </div>
           </div>
         ) : (
@@ -205,15 +219,15 @@ export default async function AdminQuoteDetailPage({
               <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                 <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
                   <div className="text-zinc-400">Shop Lead</div>
-                  <div className="mt-1 font-semibold">{String(leadEmailSent ?? "—")}</div>
+                  <div className="mt-1 font-semibold">{fmtBool(leadEmailSent)}</div>
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
                   <div className="text-zinc-400">Customer Receipt</div>
-                  <div className="mt-1 font-semibold">{String(receiptEmailSent ?? "—")}</div>
+                  <div className="mt-1 font-semibold">{fmtBool(receiptEmailSent)}</div>
                 </div>
                 <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
                   <div className="text-zinc-400">Shop Render</div>
-                  <div className="mt-1 font-semibold">{String(renderEmailSent ?? "—")}</div>
+                  <div className="mt-1 font-semibold">{fmtBool(renderEmailSent)}</div>
                 </div>
               </div>
             </div>
@@ -275,7 +289,12 @@ export default async function AdminQuoteDetailPage({
               <div className="text-lg font-semibold">Render Preview</div>
               {previewImageUrl ? (
                 <div className="mt-3">
-                  <a className="underline text-sm" href={previewImageUrl} target="_blank" rel="noreferrer">
+                  <a
+                    className="underline text-sm"
+                    href={previewImageUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     Open render URL
                   </a>
                   <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800">
