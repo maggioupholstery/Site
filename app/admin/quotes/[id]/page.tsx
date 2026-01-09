@@ -1,20 +1,36 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
-type PageProps = {
-  params: { id: string };
-};
+type PageProps = { params: { id: string } };
 
 export default async function QuoteDetailPage({ params }: PageProps) {
   const { id } = params;
 
-  // Call your existing API route (recommended to keep auth/cookies consistent)
-  const res = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/api/admin/quotes/${id}`, {
-    // ensure no caching weirdness in admin
+  // headers() is async in your Next build
+  const h = await headers();
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  if (!host) throw new Error("Missing host header");
+
+  const baseUrl = `${proto}://${host}`;
+
+  const res = await fetch(`${baseUrl}/api/admin/quotes/${id}`, {
     cache: "no-store",
-    // IMPORTANT: when calling internal APIs from the server, absolute URL is safest on Vercel
+    // NOTE: cookies are NOT automatically forwarded to internal fetches
+    // (If this API requires the admin cookie, we should *not* fetch it this way—see note below.)
   });
+
+  if (res.status === 401) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 p-8">
+        <Link className="text-zinc-300 underline" href="/admin/login?next=/admin/quotes">
+          Sign in
+        </Link>
+      </div>
+    );
+  }
 
   if (res.status === 404) {
     return (
@@ -45,22 +61,9 @@ export default async function QuoteDetailPage({ params }: PageProps) {
           <div className="text-sm text-zinc-400">Quote ID</div>
           <div className="font-mono text-zinc-200 break-all">{id}</div>
 
-          <div className="mt-6 grid gap-4">
-            <div>
-              <div className="text-sm text-zinc-400">Customer</div>
-              <div className="text-zinc-100">{quote?.name} • {quote?.email}</div>
-            </div>
-
-            <div>
-              <div className="text-sm text-zinc-400">Category</div>
-              <div className="text-zinc-100">{quote?.category}</div>
-            </div>
-
-            <div>
-              <div className="text-sm text-zinc-400">Notes</div>
-              <div className="text-zinc-100 whitespace-pre-wrap">{quote?.notes || "—"}</div>
-            </div>
-          </div>
+          <pre className="mt-6 text-xs text-zinc-300 overflow-auto">
+            {JSON.stringify(quote, null, 2)}
+          </pre>
         </div>
       </div>
     </div>
