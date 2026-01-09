@@ -19,6 +19,10 @@ export default function QuotePage() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // ✅ progress UI
+  const [stage, setStage] = useState<string>("");
+  const [progress, setProgress] = useState<number>(0);
+
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const uploadRef = useRef<HTMLInputElement | null>(null);
   const resultsRef = useRef<HTMLDivElement | null>(null);
@@ -32,7 +36,6 @@ export default function QuotePage() {
   const trimmedName = name.trim();
   const trimmedEmail = email.trim();
   const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
-
   const canSubmit = !!files.length && !!trimmedName && emailLooksValid && !loading;
 
   function addFiles(newOnes: File[]) {
@@ -59,6 +62,33 @@ export default function QuotePage() {
       .replace(/\s+/g, "-")
       .replace(/[^a-z0-9._-]/g, "")
       .slice(0, 80);
+  }
+
+  function startProgress() {
+    setStage("Preparing…");
+    setProgress(3);
+
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - t0;
+
+      // Fast early, slower later, never hit 100 until we finish
+      const target =
+        elapsed < 4000
+          ? 10 + elapsed / 80
+          : elapsed < 12000
+          ? 60 + (elapsed - 4000) / 200
+          : 85 + (elapsed - 12000) / 900;
+
+      setProgress((p) => Math.min(92, Math.max(p, Math.floor(target))));
+    }, 250);
+
+    return () => clearInterval(timer);
+  }
+
+  function setStageAndFloor(nextStage: string, floor: number) {
+    setStage(nextStage);
+    setProgress((p) => Math.max(p, floor));
   }
 
   async function uploadPhotosToBlob(selectedFiles: File[]): Promise<PutBlobResult[]> {
@@ -88,7 +118,6 @@ export default function QuotePage() {
       return;
     }
 
-    // ✅ required checks
     if (!trimmedName) {
       setError("Please enter your name.");
       return;
@@ -105,10 +134,16 @@ export default function QuotePage() {
     }
 
     setLoading(true);
+    const stop = startProgress();
+
     try {
+      setStageAndFloor("Uploading photos…", 12);
+
       // 1) Upload to Blob
       const blobs = await uploadPhotosToBlob(files);
       const photoUrls = blobs.map((b) => b.url);
+
+      setStageAndFloor("Analyzing damage…", 45);
 
       // 2) Send URLs to API
       const res = await fetch("/api/quote", {
@@ -124,6 +159,8 @@ export default function QuotePage() {
         }),
       });
 
+      setStageAndFloor("Rendering concept…", 75);
+
       const { rawText, json } = await safeReadJson(res);
 
       if (!res.ok) {
@@ -138,13 +175,26 @@ export default function QuotePage() {
 
       setResult(json);
 
+      setStageAndFloor("Finalizing…", 95);
+      setProgress(100);
+      setStage("Done ✅");
+
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 150);
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
+      setStage("");
+      setProgress(0);
     } finally {
+      stop?.();
       setLoading(false);
+
+      // reset progress UI after a moment
+      setTimeout(() => {
+        setStage("");
+        setProgress(0);
+      }, 1200);
     }
   }
 
@@ -243,9 +293,7 @@ export default function QuotePage() {
                   required
                 />
                 {trimmedEmail && !emailLooksValid && (
-                  <div className="mt-1 text-xs text-red-300">
-                    Please enter a valid email address.
-                  </div>
+                  <div className="mt-1 text-xs text-red-300">Please enter a valid email address.</div>
                 )}
               </label>
 
@@ -374,7 +422,27 @@ export default function QuotePage() {
                 </Button>
               </div>
 
-              {/* tiny hint under button */}
+              {/* ✅ Progress indicator */}
+              {loading && (
+                <div className="pt-2">
+                  <div className="flex items-center justify-between text-xs text-zinc-400">
+                    <div>{stage || "Working…"}</div>
+                    <div>{progress}%</div>
+                  </div>
+
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full border border-zinc-800 bg-black/30">
+                    <div
+                      className="h-full rounded-full bg-zinc-200 transition-[width] duration-200"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 text-xs text-zinc-500">
+                    Larger photos and complex jobs can take a bit longer.
+                  </div>
+                </div>
+              )}
+
               {!loading && (
                 <div className="text-xs text-zinc-500">
                   <span className="text-red-300">*</span> Name and Email are required.
