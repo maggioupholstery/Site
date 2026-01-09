@@ -5,67 +5,102 @@ import { sql } from "@vercel/postgres";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type FileItem =
-  | string
-  | {
-      url?: string;
-      downloadUrl?: string;
-      name?: string;
-      filename?: string;
-      contentType?: string;
-      type?: string;
-    };
-
-function normalizeFiles(input: unknown): Array<{
+type FoundFile = {
   url: string;
   name: string;
   contentType?: string;
-}> {
-  if (!input) return [];
+  sourcePath?: string; // where we found it in the record (debug)
+};
 
-  let raw: any = input;
-
-  // If stored as JSON string in DB, parse it
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-      try {
-        raw = JSON.parse(trimmed);
-      } catch {
-        // Fall through: treat as a single URL string
-        raw = trimmed;
-      }
-    }
-  }
-
-  const arr: FileItem[] = Array.isArray(raw) ? raw : [raw];
-
-  return arr
-    .map((f) => {
-      if (!f) return null;
-
-      if (typeof f === "string") {
-        const url = f;
-        const name = url.split("/").pop() || "file";
-        return { url, name };
-      }
-
-      const url = String(f.url || f.downloadUrl || "");
-      if (!url) return null;
-
-      const name = String(f.name || f.filename || url.split("/").pop() || "file");
-      const contentType = (f.contentType || f.type) ? String(f.contentType || f.type) : undefined;
-
-      return { url, name, contentType };
-    })
-    .filter(Boolean) as Array<{ url: string; name: string; contentType?: string }>;
+function isProbablyUrl(s: string) {
+  return /^https?:\/\//i.test(s);
 }
 
-function isImageFile(f: { url: string; contentType?: string }) {
-  if (f.contentType && f.contentType.startsWith("image/")) return true;
+function stripQuery(url: string) {
+  return url.split("?")[0];
+}
 
-  // fallback to extension sniffing
-  return /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(f.url.split("?")[0]);
+function looksLikeImageUrl(url: string) {
+  return /\.(png|jpe?g|webp|gif|bmp|svg|heic|heif)$/i.test(stripQuery(url));
+}
+
+function filenameFromUrl(url: string) {
+  try {
+    const clean = stripQuery(url);
+    const name = clean.split("/").pop() || "image";
+    return decodeURIComponent(name);
+  } catch {
+    return url.split("/").pop() || "image";
+  }
+}
+
+/**
+ * Deep-scan any object/array/string for:
+ * - strings that are image URLs
+ * - objects with url/downloadUrl fields that are image URLs
+ * - arrays of the above
+ *
+ * This avoids schema guessing (files vs uploads vs attachments, etc.)
+ */
+function extractImagesDeep(value: unknown, path = "quote", out: FoundFile[] = [], seen = new Set<any>()) {
+  if (value == null) return out;
+
+  // prevent cycles
+  if (typeof value === "object") {
+    if (seen.has(value)) return out;
+    seen.add(value);
+  }
+
+  if (typeof value === "string") {
+    if (isProbablyUrl(value) && looksLikeImageUrl(value)) {
+      out.push({
+        url: value,
+        name: filenameFromUrl(value),
+        sourcePath: path,
+      });
+    }
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => extractImagesDeep(v, `${path}[${i}]`, out, seen));
+    return out;
+  }
+
+  if (typeof value === "object") {
+    const obj: any = value;
+
+    // Common shapes: { url }, { downloadUrl }, { file: { url } }, Vercel Blob PutBlobResult, etc.
+    const maybeUrl = obj?.url || obj?.downloadUrl || obj?.href;
+    const maybeType = obj?.contentType || obj?.type;
+
+    if (typeof maybeUrl === "string" && isProbablyUrl(maybeUrl) && looksLikeImageUrl(maybeUrl)) {
+      out.push({
+        url: maybeUrl,
+        name: String(obj?.name || obj?.filename || filenameFromUrl(maybeUrl)),
+        contentType: typeof maybeType === "string" ? maybeType : undefined,
+        sourcePath: path,
+      });
+      // still keep scanning in case there are more
+    }
+
+    for (const [k, v] of Object.entries(obj)) {
+      extractImagesDeep(v, `${path}.${k}`, out, seen);
+    }
+
+    return out;
+  }
+
+  return out;
+}
+
+function dedupeByUrl(files: FoundFile[]) {
+  const map = new Map<string, FoundFile>();
+  for (const f of files) {
+    const key = f.url;
+    if (!map.has(key)) map.set(key, f);
+  }
+  return Array.from(map.values());
 }
 
 export default async function QuoteDetailPage({
@@ -73,10 +108,8 @@ export default async function QuoteDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  // ✅ Next 15/Turbopack: params is a Promise
   const { id } = await params;
 
-  // ✅ In your Next build, cookies() is async
   const cookieStore = await cookies();
   const isAdmin = cookieStore.get("admin")?.value === "true";
 
@@ -87,7 +120,6 @@ export default async function QuoteDetailPage({
         <div className="mx-auto max-w-3xl px-4 py-16">
           <h1 className="text-3xl font-semibold tracking-tight">Login required</h1>
           <p className="mt-2 text-zinc-400">Please sign in to view this quote.</p>
-
           <Link
             href={`/admin/login?next=${next}`}
             className="mt-6 inline-block underline text-zinc-200"
@@ -113,7 +145,6 @@ export default async function QuoteDetailPage({
           <Link className="text-zinc-300 underline" href="/admin/quotes">
             ← Back
           </Link>
-
           <h1 className="mt-6 text-2xl font-semibold">Quote not found</h1>
           <p className="mt-2 text-zinc-400">
             ID: <span className="font-mono break-all">{id}</span>
@@ -125,9 +156,8 @@ export default async function QuoteDetailPage({
 
   const quote: any = rows[0];
 
-  const files = normalizeFiles(quote.files);
-  const images = files.filter(isImageFile);
-  const nonImages = files.filter((f) => !isImageFile(f));
+  // ✅ Find images anywhere in the record
+  const images = dedupeByUrl(extractImagesDeep(quote));
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -181,60 +211,55 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
-          {/* ✅ IMAGE GALLERY */}
-          {images.length > 0 && (
-            <div>
-              <div className="text-sm text-zinc-400">Submitted Images</div>
+          {/* ✅ Submitted Images (deep scanned) */}
+          <div>
+            <div className="text-sm text-zinc-400">Submitted Images</div>
 
-              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {images.map((img, idx) => (
-                  <a
-                    key={idx}
-                    href={img.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="group block overflow-hidden rounded-xl border border-zinc-900 bg-black/30"
-                    title={img.name}
-                  >
-                    <img
-                      src={img.url}
-                      alt={img.name}
-                      className="h-40 w-full object-cover transition-transform duration-150 group-hover:scale-[1.02]"
-                      loading="lazy"
-                    />
-                    <div className="px-3 py-2 text-xs text-zinc-300 truncate">
-                      {img.name}
-                    </div>
-                  </a>
-                ))}
+            {images.length === 0 ? (
+              <div className="mt-2 text-sm text-zinc-500">
+                No image URLs found in this record.
+                <div className="mt-1 text-xs text-zinc-600">
+                  If the customer uploaded images, they likely aren’t being saved into the quotes table yet.
+                  Expand “Raw record” below and search for “http” or “blob”.
+                </div>
               </div>
-
-              <div className="mt-2 text-xs text-zinc-500">
-                Tip: click an image to open full size in a new tab.
-              </div>
-            </div>
-          )}
-
-          {/* Non-image attachments */}
-          {nonImages.length > 0 && (
-            <div>
-              <div className="text-sm text-zinc-400">Other Files</div>
-              <ul className="mt-2 space-y-2">
-                {nonImages.map((f, idx) => (
-                  <li key={idx} className="text-sm">
+            ) : (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {images.map((img, idx) => (
                     <a
-                      href={f.url}
+                      key={`${img.url}-${idx}`}
+                      href={img.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="underline text-zinc-200 break-all"
+                      className="group block overflow-hidden rounded-xl border border-zinc-900 bg-black/30"
+                      title={img.name}
                     >
-                      {f.name}
+                      <img
+                        src={img.url}
+                        alt={img.name}
+                        className="h-40 w-full object-cover transition-transform duration-150 group-hover:scale-[1.02]"
+                        loading="lazy"
+                      />
+                      <div className="px-3 py-2 text-xs text-zinc-300 truncate">
+                        {img.name}
+                      </div>
                     </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+                  ))}
+                </div>
+
+                {/* Optional: show where we found them */}
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs text-zinc-500">
+                    Debug: where these URLs came from
+                  </summary>
+                  <pre className="mt-2 text-xs text-zinc-300 overflow-auto rounded-xl border border-zinc-900 bg-black/30 p-3">
+                    {JSON.stringify(images.map(({ url, sourcePath }) => ({ url, sourcePath })), null, 2)}
+                  </pre>
+                </details>
+              </>
+            )}
+          </div>
 
           {/* Debug raw row */}
           <details className="pt-2">
