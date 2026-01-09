@@ -6,7 +6,13 @@ import { sql } from "@vercel/postgres";
 export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Safe: don't crash build/runtime if env missing
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
+
+const SHOP_TO = "maggioupholstery@gmail.com";
 
 function escHtml(s: unknown) {
   return String(s ?? "")
@@ -14,6 +20,7 @@ function escHtml(s: unknown) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+    .replace(/'/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
 
@@ -33,7 +40,6 @@ function toNumOrNull(v: any): number | null {
 }
 
 function getBaseUrl() {
-  // Prefer explicit base URL for building admin links
   return (
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.VERCEL_PROJECT_PRODUCTION_URL ||
@@ -253,7 +259,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // --- OpenAI ---
     const prompt = {
       category,
       notes,
@@ -285,7 +290,6 @@ export async function POST(req: Request) {
     const assessment = aiRaw?.assessment ?? {};
     const estimate = aiRaw?.estimate ?? {};
 
-    // --- sanitize numeric estimate fields ---
     const laborHours = toNumOrNull(estimate.laborHours);
     const laborRate = toNumOrNull(estimate.laborRate);
     const laborSubtotal =
@@ -346,7 +350,6 @@ export async function POST(req: Request) {
       estimate_high: totalHigh,
     };
 
-    // --- DB insert ---
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
@@ -372,7 +375,6 @@ export async function POST(req: Request) {
 
     const adminUrl = absoluteUrl(`/admin/quotes/${quoteId}`);
 
-    // --- Email: customer receipt (NO admin/render links) ---
     const customerReceipt = buildCustomerReceiptEmail({
       name,
       customerEmail,
@@ -386,7 +388,6 @@ export async function POST(req: Request) {
       materials: normalized.material_recommendation,
     });
 
-    // --- Email: shop lead (WITH admin link + photo links) ---
     const shopLead = buildShopLeadEmail({
       name,
       customerEmail,
@@ -404,15 +405,29 @@ export async function POST(req: Request) {
 
     const fromEmail =
       process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
-    const shopTo = "maggioupholstery@gmail.com";
 
-    // send both, independently, so one failing doesn’t block the other
     const results: any = {
       customerReceipt: { sent: false, id: null, error: null },
       shopLead: { sent: false, id: null, error: null },
     };
 
-    // 1) Customer receipt
+    // If RESEND_API_KEY isn't set, return a clear response instead of crashing
+    if (!resend) {
+      return NextResponse.json({
+        ok: true,
+        quoteId,
+        email: {
+          ...results,
+          error: "RESEND_API_KEY is not set in this environment.",
+        },
+        assessment: assessmentOut,
+        estimate: estimateOut,
+        normalized,
+        photoUrls,
+      });
+    }
+
+    // 1) Customer receipt (reply goes to shop)
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
@@ -420,6 +435,7 @@ export async function POST(req: Request) {
         subject: customerReceipt.subject,
         text: customerReceipt.text,
         html: customerReceipt.html,
+        replyTo: SHOP_TO,
       });
       const id = r?.data?.id ?? r?.id ?? null;
       results.customerReceipt = { sent: Boolean(id), id, error: r?.error ?? null };
@@ -435,7 +451,7 @@ export async function POST(req: Request) {
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
-        to: [shopTo],
+        to: [SHOP_TO],
         subject: shopLead.subject,
         text: shopLead.text,
         html: shopLead.html,
