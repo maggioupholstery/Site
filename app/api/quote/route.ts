@@ -164,7 +164,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1) Ask OpenAI for assessment (keep it raw)
     const prompt = {
       category,
       notes,
@@ -196,7 +195,7 @@ export async function POST(req: Request) {
     const assessment = aiRaw?.assessment ?? {};
     const estimate = aiRaw?.estimate ?? {};
 
-    // --- sanitize / normalize numeric estimate fields ---
+    // --- sanitize numeric estimate fields ---
     const laborHours = toNumOrNull(estimate.laborHours);
     const laborRate = toNumOrNull(estimate.laborRate);
     const laborSubtotal =
@@ -207,7 +206,6 @@ export async function POST(req: Request) {
     const materialsHigh = toNumOrNull(estimate.materialsHigh);
     const shopMinimum = toNumOrNull(estimate.shopMinimum);
 
-    // totals: if missing, compute; then apply shop minimum if present
     let totalLow =
       toNumOrNull(estimate.totalLow) ??
       (laborSubtotal != null && materialsLow != null
@@ -220,6 +218,7 @@ export async function POST(req: Request) {
         ? laborSubtotal + materialsHigh
         : null);
 
+    // apply shop minimum if present
     if (shopMinimum != null) {
       if (totalLow != null) totalLow = Math.max(totalLow, shopMinimum);
       if (totalHigh != null) totalHigh = Math.max(totalHigh, shopMinimum);
@@ -250,7 +249,6 @@ export async function POST(req: Request) {
       ),
     };
 
-    // 2) Normalized fields for DB/email/admin
     const normalized = {
       ai_summary: cleanLine(assessmentOut.damage || ""),
       recommended_scope: cleanLine(assessmentOut.recommended_repair || ""),
@@ -259,7 +257,6 @@ export async function POST(req: Request) {
       estimate_high: totalHigh,
     };
 
-    // 3) Write to DB (raw + normalized)
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
@@ -278,7 +275,7 @@ export async function POST(req: Request) {
 
     const quoteId = inserted.rows?.[0]?.id;
 
-    // 4) Send clean email (no raw JSON dump)
+    // --- send email (robust status reporting) ---
     const { subject, text, html } = buildEmail({
       name,
       email,
@@ -294,27 +291,40 @@ export async function POST(req: Request) {
     const fromEmail =
       process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
 
-    const emailResult = await resend.emails.send({
-      from: fromEmail,
-      to: [toEmail],
-      subject,
-      text,
-      html,
-      replyTo: email,
-    });
+    let emailId: string | null = null;
+    let emailError: any = null;
+    let emailSent = false;
 
-    // 5) IMPORTANT: return the objects your UI expects
+    try {
+      const r: any = await resend.emails.send({
+        from: fromEmail,
+        to: [toEmail],
+        subject,
+        text,
+        html,
+        replyTo: email,
+      });
+
+      emailId = r?.data?.id ?? null;
+      emailError = r?.error ?? null;
+
+      // Sent = we got an id AND no provider error
+      emailSent = Boolean(emailId) && !emailError;
+    } catch (e: any) {
+      emailError = e?.message || String(e);
+      emailSent = false;
+    }
+
     return NextResponse.json({
       ok: true,
       quoteId,
       email: {
-        sent: !!emailResult?.data?.id,
-        id: emailResult?.data?.id ?? null,
-        error: emailResult?.error ?? null,
+        sent: emailSent,
+        id: emailId,
+        error: emailError,
       },
       assessment: assessmentOut,
       estimate: estimateOut,
-      // Keep these for admin UI or debugging
       normalized,
       photoUrls,
     });
