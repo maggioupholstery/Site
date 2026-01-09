@@ -167,6 +167,34 @@ function extractGeneratedImageBase64(resp: any): string | null {
   return null;
 }
 
+// ---- email attachment helpers (NEW) ----
+async function fileToEmailAttachment(file: File, fallbackName: string) {
+  const ab = await file.arrayBuffer();
+  const buf = Buffer.from(ab);
+  return {
+    filename: (file as any).name || fallbackName,
+    content: buf,
+    contentType: (file as any).type || "application/octet-stream",
+  };
+}
+
+function dataUrlToEmailAttachment(dataUrl: string, filename: string) {
+  // Expected: data:<mime>;base64,<data>
+  const idx = dataUrl.indexOf("base64,");
+  if (idx === -1) throw new Error("Invalid data URL (missing base64,)");
+  const header = dataUrl.slice(0, idx);
+  const b64 = dataUrl.slice(idx + "base64,".length).trim();
+
+  const mimeMatch = header.match(/^data:([^;]+);/i);
+  const contentType = mimeMatch?.[1] || "application/octet-stream";
+
+  return {
+    filename,
+    content: Buffer.from(b64, "base64"),
+    contentType,
+  };
+}
+
 // Allow browser preflight
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -459,12 +487,40 @@ export async function POST(req: Request) {
           `<p>${esc(notes || "(none)")}</p>` +
           `</div>`;
 
+        // ---- NEW: Build attachments (original photos + AI preview if available) ----
+        const attachments: Array<{
+          filename: string;
+          content: Buffer;
+          contentType?: string;
+        }> = [];
+
+        for (let i = 0; i < selected.length; i++) {
+          const f = selected[i];
+          const ext =
+            (f as any).type === "image/png"
+              ? "png"
+              : (f as any).type === "image/webp"
+              ? "webp"
+              : "jpg";
+          attachments.push(await fileToEmailAttachment(f, `original-${String(i + 1).padStart(2, "0")}.${ext}`));
+        }
+
+        if (previewImageDataUrl) {
+          try {
+            attachments.push(dataUrlToEmailAttachment(previewImageDataUrl, "ai-preview.png"));
+          } catch (e: any) {
+            // Don’t fail the email if attachment conversion fails
+            console.error("Failed to attach AI preview:", e?.message || e);
+          }
+        }
+
         const resp = await resend.emails.send({
           from,
           to,
           subject,
           html,
           replyTo: email ? email : undefined,
+          attachments: attachments.length ? attachments : undefined,
         });
 
         // Resend returns { data, error }
