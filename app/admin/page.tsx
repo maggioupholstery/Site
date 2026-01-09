@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function AdminRootPage() {
-  redirect("/quotes");
+  redirect("/admin/quotes");
 }
