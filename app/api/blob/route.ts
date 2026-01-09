@@ -12,7 +12,6 @@ export async function POST(req: Request): Promise<Response> {
       request: req,
 
       onBeforeGenerateToken: async (pathname, clientPayload) => {
-        // Only allow uploads into this folder
         if (!pathname.startsWith("quotes/")) {
           throw new Error("Invalid upload path");
         }
@@ -24,10 +23,6 @@ export async function POST(req: Request): Promise<Response> {
       },
 
       onUploadCompleted: async ({ blob, tokenPayload }) => {
-        // IMPORTANT:
-        // In current @vercel/blob typings, PutBlobResult does NOT include `size`.
-        // Do not reference blob.size.
-
         console.log("Blob upload completed:", {
           url: blob.url,
           pathname: blob.pathname,
