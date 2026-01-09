@@ -1,496 +1,315 @@
-"use client";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { sql } from "@vercel/postgres";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+export const runtime = "nodejs";
 
-type QuoteRecord = {
-  id: string;
-  created_at?: string;
-
-  name?: string;
-  email?: string;
-  phone?: string;
-  category?: string;
-  notes?: string;
-
-  // saved JSONB
-  files?: any; // can be array/object/string depending on driver
-  assessment?: any;
-  estimate?: any;
-
-  // render storage
-  preview_image_url?: string;
-  preview_image_data_url?: string;
-
-  // status
-  email_sent?: boolean;
-  render_email_sent?: boolean;
-
-  // any other fields
-  [k: string]: any;
-};
-
-function safeJsonParse<T = any>(v: any): T | null {
-  if (!v) return null;
-  if (typeof v === "object") return v as T;
-  if (typeof v === "string") {
-    try {
-      return JSON.parse(v) as T;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+function clean(s: any) {
+  return String(s ?? "").trim();
 }
 
-function extractPhotoUrls(q: QuoteRecord): string[] {
-  // Prefer `files` JSONB which we now write as [{url, name, contentType}]
-  const parsed = safeJsonParse<any>(q.files);
-  if (Array.isArray(parsed)) {
-    const urls = parsed
-      .map((x) => (typeof x === "string" ? x : x?.url))
-      .map((u) => String(u || "").trim())
-      .filter(Boolean);
-    if (urls.length) return urls;
+function fmtBool(v: any) {
+  if (v === true) return "Yes ✅";
+  if (v === false) return "No ⚠️";
+  return "—";
+}
+
+function fmtDate(v: any) {
+  const d = v ? new Date(v) : null;
+  if (!d || Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-US");
+}
+
+function toArray(x: any): string[] {
+  if (!x) return [];
+  if (Array.isArray(x)) return x.map(String).filter(Boolean);
+  if (typeof x === "string") {
+    try {
+      const j = JSON.parse(x);
+      if (Array.isArray(j)) return j.map(String).filter(Boolean);
+    } catch {}
+    return [x].filter(Boolean);
   }
-
-  // Fallbacks if you ever stored photos elsewhere
-  const fallbacks = [
-    q.photoUrls,
-    q.photo_urls,
-    q.photos,
-    q.photo_urls_json,
-  ].find((x) => Array.isArray(x) || typeof x === "string");
-
-  const parsed2 = safeJsonParse<any>(fallbacks);
-  if (Array.isArray(parsed2)) {
-    return parsed2.map((u) => String(u || "").trim()).filter(Boolean);
-  }
-
   return [];
 }
 
-export default function AdminQuoteDetailPage() {
-  const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = String(params?.id || "");
+export default async function AdminQuoteDetailPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const id = clean(params?.id);
+  if (!id) notFound();
 
-  const [loading, setLoading] = useState(true);
-  const [quote, setQuote] = useState<QuoteRecord | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  let row: any = null;
 
-  // render controls
-  const [rendering, setRendering] = useState(false);
-  const [renderErr, setRenderErr] = useState<string | null>(null);
-
-  const photoUrls = useMemo(() => (quote ? extractPhotoUrls(quote) : []), [quote]);
-  const previewSrc = useMemo(() => {
-    const url = String(quote?.preview_image_url || "").trim();
-    if (url) return url;
-    const data = String(quote?.preview_image_data_url || "").trim();
-    if (data) return data;
-    // some earlier versions used camelCase
-    const data2 = String(quote?.previewImageDataUrl || "").trim();
-    return data2 || "";
-  }, [quote]);
-
-  async function loadQuote() {
-    if (!id) return;
-
-    setErr(null);
-    setLoading(true);
-
-    try {
-      const res = await fetch(`/api/admin/quotes/${encodeURIComponent(id)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
-
-      // If not logged in, route should return 401
-      if (res.status === 401) {
-        router.push(`/admin/login?next=${encodeURIComponent(`/admin/quotes/${id}`)}`);
-        return;
-      }
-
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = JSON.parse(text);
-      } catch {}
-
-      if (!res.ok) throw new Error(json?.error || text || "Failed to load quote");
-
-      setQuote(json as QuoteRecord);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to load quote");
-      setQuote(null);
-    } finally {
-      setLoading(false);
-    }
+  try {
+    // ✅ SELECT * so we don't break if columns differ across your DB iterations
+    const q = await sql`SELECT * FROM quotes WHERE id = ${id} LIMIT 1`;
+    row = q.rows?.[0] ?? null;
+  } catch (e) {
+    console.error("Admin quote detail query failed:", e);
+    row = null;
   }
 
-  async function generateRender(auto = false) {
-    if (!quote) return;
+  if (!row) notFound();
 
-    const quoteId = String(quote.id || "").trim();
-    const urls = photoUrls;
+  // --- core fields ---
+  const name = clean(row.name);
+  const email = clean(row.email);
+  const phone = clean(row.phone);
+  const category = clean(row.category);
+  const notes = clean(row.notes);
 
-    if (!quoteId) {
-      setRenderErr("Missing quote ID.");
-      return;
-    }
-    if (!urls.length) {
-      setRenderErr("No submitted photos found for this quote.");
-      return;
-    }
+  const createdAt = row.created_at ?? row.createdAt ?? null;
 
-    setRenderErr(null);
-    setRendering(true);
+  // --- photos / uploads (support both photo_urls and files) ---
+  const photoUrls =
+    toArray(row.photo_urls).length > 0
+      ? toArray(row.photo_urls)
+      : toArray(row.files);
 
-    try {
-      const res = await fetch("/api/quote/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          quoteId,
-          category: quote.category || "auto",
-          photoUrls: urls.slice(0, 3),
-        }),
-      });
+  // --- AI blobs (support both raw and normalized) ---
+  const aiSummary = clean(row.ai_summary);
+  const scope = clean(row.recommended_scope);
+  const materials = clean(row.material_recommendation);
 
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = JSON.parse(text);
-      } catch {}
+  const estLow = row.estimate_low ?? null;
+  const estHigh = row.estimate_high ?? null;
 
-      if (!res.ok) throw new Error(json?.error || text || "Render failed");
+  // --- EMAIL STATUS (this is the important part) ---
+  // Lead email = the "shop lead" sent from /api/quote
+  const leadEmailSent =
+    row.lead_email_sent ??
+    row.leadEmailSent ??
+    row.email_sent ?? // legacy
+    row.emailSent ?? // legacy from response
+    null;
 
-      // Merge fields into quote so UI updates immediately
-      const preview_image_url = String(json?.previewImageUrl || json?.preview_image_url || "").trim();
-      const preview_image_data_url = String(
-        json?.previewImageDataUrl || json?.preview_image_data_url || ""
-      ).trim();
+  const leadEmailId =
+    row.lead_email_id ?? row.leadEmailId ?? row.email_id ?? null;
 
-      setQuote((prev) => ({
-        ...(prev || ({} as QuoteRecord)),
-        preview_image_url: preview_image_url || prev?.preview_image_url,
-        preview_image_data_url: preview_image_data_url || prev?.preview_image_data_url,
-        render_email_sent:
-          typeof json?.renderEmailSent === "boolean"
-            ? json.renderEmailSent
-            : prev?.render_email_sent,
-      }));
-    } catch (e: any) {
-      // Only show an error if user clicked the button; keep auto-run quieter
-      setRenderErr(e?.message || "Render failed");
-      if (auto) {
-        // no-op otherwise; admin can click retry
-      }
-    } finally {
-      setRendering(false);
-    }
-  }
+  const leadEmailError =
+    row.lead_email_error ?? row.leadEmailError ?? row.email_error ?? null;
 
-  // initial load
-  useEffect(() => {
-    loadQuote();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  // Render email = sent from /api/quote/render (shop gets render email)
+  const renderEmailSent =
+    row.render_email_sent ?? row.renderEmailSent ?? null;
 
-  // auto-generate render if missing (admin view guarantees you can always generate later)
-  useEffect(() => {
-    if (!quote) return;
-    if (previewSrc) return;
-    if (!photoUrls.length) return;
-    if (rendering) return;
+  const renderEmailId = row.render_email_id ?? row.renderEmailId ?? null;
+  const renderEmailError =
+    row.render_email_error ?? row.renderEmailError ?? null;
 
-    // fire and forget; user can still click Generate if it fails
-    generateRender(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quote?.id]); // run once after quote arrives
+  // Customer receipt email (optional – if you have it in DB)
+  const receiptEmailSent =
+    row.receipt_email_sent ?? row.receiptEmailSent ?? null;
 
-  const est = quote?.estimate || {};
-  const assessment = quote?.assessment || {};
+  const receiptEmailId = row.receipt_email_id ?? row.receiptEmailId ?? null;
+  const receiptEmailError =
+    row.receipt_email_error ?? row.receiptEmailError ?? null;
 
-  const totalLow = Number(est.totalLow ?? est.total_low ?? 0);
-  const totalHigh = Number(est.totalHigh ?? est.total_high ?? 0);
+  // Render preview fields
+  const previewImageUrl = clean(row.preview_image_url);
+  const previewImageDataUrl = clean(row.preview_image_data_url);
+
+  const adminTitle = `Quote ${id}`;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto max-w-5xl px-4 py-10 space-y-5">
-        <div className="flex items-center justify-between gap-3">
+      <div className="mx-auto max-w-5xl px-4 py-10 space-y-6">
+        <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-sm text-zinc-400">Admin</div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">
-              Quote Detail
-            </h1>
-            <div className="text-xs text-zinc-500 mt-1 break-all">
-              ID: {id || "—"}
+            <h1 className="text-2xl md:text-3xl font-semibold">{adminTitle}</h1>
+            <div className="mt-1 text-sm text-zinc-400">
+              Created: {fmtDate(createdAt)}
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="rounded-2xl border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-              onClick={() => router.push("/admin/quotes")}
-            >
-              ← Back
-            </Button>
+          <Link
+            href="/admin"
+            className="rounded-xl border border-zinc-800 bg-black/30 px-3 py-2 text-sm hover:bg-zinc-900"
+          >
+            ← Back
+          </Link>
+        </div>
 
-            <Button
-              variant="outline"
-              className="rounded-2xl border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-              onClick={loadQuote}
-              disabled={loading}
-            >
-              Refresh
-            </Button>
+        {/* Customer */}
+        <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
+          <div className="text-lg font-semibold">Customer</div>
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-zinc-400">Name</div>
+              <div>{name || "—"}</div>
+            </div>
+            <div>
+              <div className="text-zinc-400">Category</div>
+              <div>{category || "—"}</div>
+            </div>
+            <div>
+              <div className="text-zinc-400">Email</div>
+              <div>
+                {email ? (
+                  <a className="underline" href={`mailto:${email}`}>
+                    {email}
+                  </a>
+                ) : (
+                  "—"
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-zinc-400">Phone</div>
+              <div>
+                {phone ? (
+                  <a className="underline" href={`tel:${phone}`}>
+                    {phone}
+                  </a>
+                ) : (
+                  "—"
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-zinc-400 text-sm">Notes</div>
+            <div className="mt-1 whitespace-pre-wrap text-sm">
+              {notes || "—"}
+            </div>
           </div>
         </div>
 
-        {err && (
-          <Card className="rounded-[2rem] border-red-900/40 bg-zinc-950/70">
-            <CardContent className="p-6">
-              <div className="text-red-300 font-semibold">Error</div>
-              <div className="text-sm text-zinc-300 mt-1">{err}</div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Email Status */}
+        <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
+          <div className="text-lg font-semibold">Email Status</div>
 
-        {loading && !quote && (
-          <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-            <CardContent className="p-6 text-zinc-300">Loading…</CardContent>
-          </Card>
-        )}
-
-        {!loading && !quote && !err && (
-          <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-            <CardContent className="p-6 text-zinc-300">
-              Quote not found.
-            </CardContent>
-          </Card>
-        )}
-
-        {quote && (
-          <>
-            {/* Summary */}
-            <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-              <CardContent className="p-6 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Name</div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {quote.name || "—"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Email</div>
-                    <div className="text-sm font-semibold text-zinc-100 break-all">
-                      {quote.email || "—"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Phone</div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {quote.phone || "—"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Category</div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {quote.category || "—"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Lead email</div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {quote.email_sent ? "Sent ✅" : "Not sent ⚠️"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-900 bg-black/25 p-4">
-                    <div className="text-xs text-zinc-500">Render email</div>
-                    <div className="text-sm font-semibold text-zinc-100">
-                      {quote.render_email_sent ? "Sent ✅" : "Not yet"}
-                    </div>
-                  </div>
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+            <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
+              <div className="text-zinc-400">Shop Lead Email</div>
+              <div className="mt-1 font-semibold">{fmtBool(leadEmailSent)}</div>
+              {leadEmailId ? (
+                <div className="mt-1 text-xs text-zinc-400">
+                  id: {String(leadEmailId)}
                 </div>
-
-                {quote.notes && (
-                  <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4">
-                    <div className="text-xs text-zinc-500">Notes</div>
-                    <div className="mt-1 text-sm text-zinc-200 whitespace-pre-wrap">
-                      {quote.notes}
-                    </div>
-                  </div>
-                )}
-
-                {(totalLow || totalHigh) && (
-                  <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4">
-                    <div className="text-xs text-zinc-500">Estimated total</div>
-                    <div className="mt-1 text-2xl font-semibold text-zinc-100">
-                      ${totalLow} – ${totalHigh}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Submitted Photos */}
-            <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-              <CardContent className="p-6 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-lg font-semibold">Submitted Photos</div>
-                    <div className="text-xs text-zinc-500">
-                      {photoUrls.length ? `${photoUrls.length} file(s)` : "No files found"}
-                    </div>
-                  </div>
-
-                  <Button
-                    variant="outline"
-                    className="rounded-2xl border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-                    onClick={() => {
-                      // open the first photo in a new tab if available
-                      if (photoUrls[0]) window.open(photoUrls[0], "_blank", "noopener,noreferrer");
-                    }}
-                    disabled={!photoUrls.length}
-                  >
-                    Open First
-                  </Button>
+              ) : null}
+              {leadEmailError ? (
+                <div className="mt-2 text-xs text-red-300">
+                  {String(leadEmailError)}
                 </div>
+              ) : null}
+            </div>
 
-                {photoUrls.length > 0 && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {photoUrls.map((src, i) => (
-                      <a
-                        key={i}
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="relative overflow-hidden rounded-2xl border border-zinc-900 bg-black/30 block"
-                        style={{ aspectRatio: "4 / 3" }}
-                      >
-                        <img
-                          src={src}
-                          alt={`Submitted photo ${i + 1}`}
-                          className="absolute inset-0 h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                        <div className="absolute bottom-2 left-2 rounded-xl bg-black/60 px-2 py-1 text-xs text-white">
-                          Photo {i + 1}
-                        </div>
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Concept Render */}
-            <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-              <CardContent className="p-6 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-lg font-semibold">Concept Render</div>
-                    <div className="text-xs text-zinc-500">
-                      Auto-generates if missing when you open this page
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      className="rounded-2xl"
-                      onClick={() => generateRender(false)}
-                      disabled={rendering || !photoUrls.length}
-                    >
-                      {rendering ? "Generating…" : "Generate / Retry"}
-                    </Button>
-
-                    {previewSrc && (
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-                        onClick={() => window.open(previewSrc, "_blank", "noopener,noreferrer")}
-                      >
-                        Open
-                      </Button>
-                    )}
-                  </div>
+            <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
+              <div className="text-zinc-400">Customer Receipt Email</div>
+              <div className="mt-1 font-semibold">
+                {fmtBool(receiptEmailSent)}
+              </div>
+              {receiptEmailId ? (
+                <div className="mt-1 text-xs text-zinc-400">
+                  id: {String(receiptEmailId)}
                 </div>
-
-                {renderErr && (
-                  <div className="rounded-2xl border border-red-900/40 bg-black/20 p-4">
-                    <div className="text-sm text-red-300">{renderErr}</div>
-                  </div>
-                )}
-
-                {previewSrc ? (
-                  <div className="overflow-hidden rounded-2xl border border-zinc-900 bg-black/30">
-                    <img
-                      src={previewSrc}
-                      alt="Concept render"
-                      className="w-full h-auto object-cover"
-                      loading="lazy"
-                    />
-                  </div>
-                ) : rendering ? (
-                  <div className="rounded-2xl border border-zinc-900 bg-black/30 p-4">
-                    <div className="text-sm text-zinc-200 font-semibold">
-                      Generating the concept render…
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      This may take a bit. You’ll also receive a render email when it finishes.
-                    </div>
-                    <div className="mt-3 h-2 w-full overflow-hidden rounded-full border border-zinc-800 bg-black/30">
-                      <div className="h-full w-2/3 rounded-full bg-zinc-200 animate-pulse" />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4 text-sm text-zinc-300">
-                    No render yet. Click <span className="text-zinc-100 font-semibold">Generate / Retry</span>.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Raw JSON (handy for debugging) */}
-            <Card className="rounded-[2rem] border-zinc-900 bg-zinc-950/70">
-              <CardContent className="p-6 space-y-3">
-                <div className="text-lg font-semibold">AI Output</div>
-
-                <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4">
-                  <div className="text-xs text-zinc-500">Assessment</div>
-                  <pre className="mt-2 text-xs text-zinc-200 overflow-auto whitespace-pre-wrap">
-                    {JSON.stringify(assessment || {}, null, 2)}
-                  </pre>
+              ) : null}
+              {receiptEmailError ? (
+                <div className="mt-2 text-xs text-red-300">
+                  {String(receiptEmailError)}
                 </div>
+              ) : null}
+            </div>
 
-                <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4">
-                  <div className="text-xs text-zinc-500">Estimate</div>
-                  <pre className="mt-2 text-xs text-zinc-200 overflow-auto whitespace-pre-wrap">
-                    {JSON.stringify(est || {}, null, 2)}
-                  </pre>
+            <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
+              <div className="text-zinc-400">Shop Render Email</div>
+              <div className="mt-1 font-semibold">
+                {fmtBool(renderEmailSent)}
+              </div>
+              {renderEmailId ? (
+                <div className="mt-1 text-xs text-zinc-400">
+                  id: {String(renderEmailId)}
                 </div>
+              ) : null}
+              {renderEmailError ? (
+                <div className="mt-2 text-xs text-red-300">
+                  {String(renderEmailError)}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
 
-                <div className="rounded-2xl border border-zinc-900 bg-black/20 p-4">
-                  <div className="text-xs text-zinc-500">Raw Record</div>
-                  <pre className="mt-2 text-xs text-zinc-200 overflow-auto whitespace-pre-wrap">
-                    {JSON.stringify(quote, null, 2)}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
-          </>
-        )}
+        {/* Estimate / AI */}
+        <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
+          <div className="text-lg font-semibold">Estimate + AI</div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
+              <div className="text-zinc-400">Estimate Low</div>
+              <div className="mt-1 font-semibold">
+                {estLow != null ? `$${Number(estLow)}` : "—"}
+              </div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-black/20 p-4">
+              <div className="text-zinc-400">Estimate High</div>
+              <div className="mt-1 font-semibold">
+                {estHigh != null ? `$${Number(estHigh)}` : "—"}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 text-sm">
+            <div className="text-zinc-400">AI Summary</div>
+            <div className="mt-1">{aiSummary || "—"}</div>
+          </div>
+
+          <div className="mt-4 text-sm">
+            <div className="text-zinc-400">Recommended Scope</div>
+            <div className="mt-1">{scope || "—"}</div>
+          </div>
+
+          <div className="mt-4 text-sm">
+            <div className="text-zinc-400">Material Suggestions</div>
+            <div className="mt-1">{materials || "—"}</div>
+          </div>
+        </div>
+
+        {/* Photos */}
+        <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
+          <div className="text-lg font-semibold">Submitted Photos</div>
+          {photoUrls.length ? (
+            <ul className="mt-3 space-y-2 text-sm">
+              {photoUrls.map((u, i) => (
+                <li key={i}>
+                  <a className="underline" href={u} target="_blank" rel="noreferrer">
+                    Photo {i + 1}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="mt-2 text-sm text-zinc-400">—</div>
+          )}
+        </div>
+
+        {/* Render Preview */}
+        <div className="rounded-2xl border border-zinc-800 bg-black/30 p-5">
+          <div className="text-lg font-semibold">Render Preview</div>
+
+          {previewImageUrl ? (
+            <div className="mt-3">
+              <a className="underline text-sm" href={previewImageUrl} target="_blank" rel="noreferrer">
+                Open render URL
+              </a>
+              <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800">
+                <img src={previewImageUrl} alt="Render preview" className="w-full h-auto" />
+              </div>
+            </div>
+          ) : previewImageDataUrl ? (
+            <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800">
+              <img src={previewImageDataUrl} alt="Render preview" className="w-full h-auto" />
+            </div>
+          ) : (
+            <div className="mt-2 text-sm text-zinc-400">No render saved yet.</div>
+          )}
+        </div>
       </div>
     </div>
   );
