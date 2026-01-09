@@ -167,7 +167,7 @@ function extractGeneratedImageBase64(resp: any): string | null {
   return null;
 }
 
-// ---- email attachment helpers (NEW) ----
+// ---- email attachment helpers ----
 async function fileToEmailAttachment(file: File, fallbackName: string) {
   const ab = await file.arrayBuffer();
   const buf = Buffer.from(ab);
@@ -442,6 +442,10 @@ export async function POST(req: Request) {
     let emailError: string | null = null;
     let emailId: string | null = null;
 
+    // NEW: track customer receipt status
+    let receiptSent = false;
+    let receiptError: string | null = null;
+
     if (!resendApiKey) {
       emailError = "RESEND_API_KEY is missing in server environment.";
     } else if (!to) {
@@ -487,7 +491,7 @@ export async function POST(req: Request) {
           `<p>${esc(notes || "(none)")}</p>` +
           `</div>`;
 
-        // ---- NEW: Build attachments (original photos + AI preview if available) ----
+        // ---- Build attachments (original photos + AI preview if available) ----
         const attachments: Array<{
           filename: string;
           content: Buffer;
@@ -502,7 +506,12 @@ export async function POST(req: Request) {
               : (f as any).type === "image/webp"
               ? "webp"
               : "jpg";
-          attachments.push(await fileToEmailAttachment(f, `original-${String(i + 1).padStart(2, "0")}.${ext}`));
+          attachments.push(
+            await fileToEmailAttachment(
+              f,
+              `original-${String(i + 1).padStart(2, "0")}.${ext}`
+            )
+          );
         }
 
         if (previewImageDataUrl) {
@@ -514,6 +523,7 @@ export async function POST(req: Request) {
           }
         }
 
+        // ---- Internal email (to shop) ----
         const resp = await resend.emails.send({
           from,
           to,
@@ -532,6 +542,49 @@ export async function POST(req: Request) {
         } else {
           emailSent = true;
           emailId = maybeData?.id ?? null;
+
+          // ---- Customer receipt (NEW) ----
+          if (email) {
+            try {
+              const receiptSubject = "We received your photo quote request";
+              const receiptHtml =
+                `<div style="font-family: ui-sans-serif,system-ui,-apple-system; line-height:1.5;">` +
+                `<h2>We received your photo quote request</h2>` +
+                `<p>Hi ${esc(name || "there")},</p>` +
+                `<p>Thanks for reaching out to <b>Maggio Upholstery</b>. We received your photos and details and will review them shortly.</p>` +
+                `<h3>Summary</h3>` +
+                `<p>` +
+                `<b>Category:</b> ${esc(normalizedAssessment.category)}<br/>` +
+                `<b>Item:</b> ${esc(normalizedAssessment.item)}<br/>` +
+                `<b>Estimated range:</b> $${safeEstimate.totalLow} – $${safeEstimate.totalHigh}` +
+                `</p>` +
+                `<p style="color:#555; font-size:14px;">` +
+                `This estimate is based on photos only. Final pricing may change after inspection or additional close-ups.` +
+                `</p>` +
+                `<hr/>` +
+                `<p>If you have more photos to share, just reply to this email.</p>` +
+                `<p>— Maggio Upholstery</p>` +
+                `</div>`;
+
+              const receiptResp = await resend.emails.send({
+                from,
+                to: email,
+                subject: receiptSubject,
+                html: receiptHtml,
+                replyTo: to, // replies come back to the shop
+              });
+
+              const receiptMaybeError = (receiptResp as any)?.error;
+              if (receiptMaybeError) {
+                receiptError = receiptMaybeError?.message || String(receiptMaybeError);
+              } else {
+                receiptSent = true;
+              }
+            } catch (err: any) {
+              receiptError = err?.message || "Customer receipt failed.";
+              console.error("Customer receipt failed:", err);
+            }
+          }
         }
       } catch (err: any) {
         emailError = err?.message || "Resend send failed.";
@@ -547,6 +600,10 @@ export async function POST(req: Request) {
       emailSent,
       emailError,
       emailId,
+
+      // receipt
+      receiptSent,
+      receiptError,
 
       // preview
       previewImageDataUrl,
