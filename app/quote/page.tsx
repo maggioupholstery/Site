@@ -41,7 +41,8 @@ export default function QuotePage() {
   const trimmedName = name.trim();
   const trimmedEmail = email.trim();
   const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
-  const canSubmit = !!files.length && !!trimmedName && emailLooksValid && !loading && !rendering;
+  const canSubmit =
+    !!files.length && !!trimmedName && emailLooksValid && !loading && !rendering;
 
   function addFiles(newOnes: File[]) {
     setFiles((prev) => [...prev, ...newOnes].slice(0, 3));
@@ -96,10 +97,16 @@ export default function QuotePage() {
     setProgress((p) => Math.max(p, floor));
   }
 
-  async function uploadPhotosToBlob(selectedFiles: File[]): Promise<PutBlobResult[]> {
+  async function uploadPhotosToBlob(
+    selectedFiles: File[]
+  ): Promise<PutBlobResult[]> {
     const uploads = selectedFiles.slice(0, 3).map((file, idx) => {
       const extGuess =
-        file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
+        file.type === "image/png"
+          ? "png"
+          : file.type === "image/webp"
+          ? "webp"
+          : "jpg";
       const base = safePathSegment(file.name || `photo-${idx + 1}.${extGuess}`);
       const pathname = `quotes/${Date.now()}-${idx + 1}-${base}`;
 
@@ -141,7 +148,9 @@ export default function QuotePage() {
 
       if (!json) throw new Error("Render returned empty response.");
 
-      const previewImageDataUrl = String((json as any)?.previewImageDataUrl ?? "").trim();
+      const previewImageDataUrl = String(
+        (json as any)?.previewImageDataUrl ?? ""
+      ).trim();
 
       // Merge preview into existing result
       setResult((prev: any) => ({
@@ -217,7 +226,10 @@ export default function QuotePage() {
         throw new Error(apiMsg || `Quote failed (HTTP ${res.status}).`);
       }
 
-      if (!json) throw new Error("Server returned an empty or non-JSON response. Please try again.");
+      if (!json)
+        throw new Error(
+          "Server returned an empty or non-JSON response. Please try again."
+        );
 
       setStageAndFloor("Finalizing…", 92);
       setProgress(100);
@@ -228,7 +240,10 @@ export default function QuotePage() {
 
       // Scroll to results immediately
       setTimeout(() => {
-        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        resultsRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
       }, 150);
 
       // ✅ Now render preview in the background
@@ -267,37 +282,55 @@ export default function QuotePage() {
 
   const shopMinimum = Number(est.shopMinimum ?? est.shop_minimum ?? 0);
 
-  const assumptions: string[] = Array.isArray(est.assumptions) ? est.assumptions : [];
+  const assumptions: string[] = Array.isArray(est.assumptions)
+    ? est.assumptions
+    : [];
 
   const assessment = result?.assessment ?? {};
   const materialSuggestions = String(
     assessment.material_suggestions ?? assessment.materialSuggestions ?? ""
   ).trim();
   const repairExplained = String(
-    assessment.recommended_repair_explained ?? assessment.recommendedRepairExplained ?? ""
+    assessment.recommended_repair_explained ??
+      assessment.recommendedRepairExplained ??
+      ""
   ).trim();
 
   const previewImageDataUrl = String(result?.previewImageDataUrl ?? "").trim();
 
-  // ✅ FIX: Email status now reflects CUSTOMER RECEIPT (new response shape)
-  const customerReceiptSent =
-    Boolean(result?.email?.customerReceipt?.sent) ||
-    Boolean(result?.emailSent) || // legacy fallback
-    Boolean(result?.email?.sent); // legacy fallback
+  // ✅ Email status (customer page): tri-state to avoid false "Not sent" warnings
+  const receipt = result?.email?.customerReceipt;
+  const legacySent = (result?.emailSent ?? result?.email?.sent) as any;
 
-  const customerReceiptError =
-    result?.email?.customerReceipt?.error ||
-    result?.emailError ||
-    result?.email?.error ||
-    null;
+  const sentExplicit = receipt?.sent === true || legacySent === true;
+
+  const emailErr =
+    receipt?.error || result?.emailError || result?.email?.error || null;
+
+  const failedExplicit = receipt?.sent === false && Boolean(emailErr);
+
+  const emailStatusLabel = sentExplicit
+    ? "Sent ✅"
+    : failedExplicit
+    ? "Not sent ⚠️"
+    : "Queued ✅";
+
+  const emailStatusHelp = sentExplicit
+    ? ""
+    : failedExplicit
+    ? "We still generated your estimate. Please call or email if needed."
+    : "Your receipt email is being processed. If you don’t see it, check spam/junk.";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto max-w-4xl px-4 py-10">
-        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">Photo Quote</h1>
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+          Photo Quote
+        </h1>
         <p className="mt-2 text-zinc-400">
-          Add up to <span className="text-zinc-200 font-semibold">3 photos</span> (wide + close-up).
-          We’ll generate a repair recommendation and a base estimate.
+          Add up to{" "}
+          <span className="text-zinc-200 font-semibold">3 photos</span> (wide +
+          close-up). We’ll generate a repair recommendation and a base estimate.
         </p>
 
         <div className="mt-6 grid grid-cols-1 gap-5">
@@ -325,7 +358,9 @@ export default function QuotePage() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className={`${fieldClass} ${
-                      error && !trimmedName ? "border-red-500/60 focus:ring-red-500/40" : ""
+                      error && !trimmedName
+                        ? "border-red-500/60 focus:ring-red-500/40"
+                        : ""
                     }`}
                     placeholder="Your name"
                     required
@@ -360,7 +395,9 @@ export default function QuotePage() {
                   required
                 />
                 {trimmedEmail && !emailLooksValid && (
-                  <div className="mt-1 text-xs text-red-300">Please enter a valid email address.</div>
+                  <div className="mt-1 text-xs text-red-300">
+                    Please enter a valid email address.
+                  </div>
                 )}
               </label>
 
@@ -474,7 +511,11 @@ export default function QuotePage() {
 
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
                 <Button onClick={onSubmit} disabled={!canSubmit} className="rounded-2xl h-11">
-                  {loading ? "Uploading + analyzing..." : rendering ? "Generating preview..." : "Get AI Estimate"}
+                  {loading
+                    ? "Uploading + analyzing..."
+                    : rendering
+                    ? "Generating preview..."
+                    : "Get AI Estimate"}
                 </Button>
 
                 <Button
@@ -541,14 +582,15 @@ export default function QuotePage() {
                     <div className="rounded-2xl border border-zinc-800 bg-black/30 px-4 py-3">
                       <div className="text-xs text-zinc-500">Email status</div>
                       <div className="text-sm font-semibold text-zinc-100">
-                        {customerReceiptSent ? "Sent ✅" : "Not sent ⚠️"}
+                        {emailStatusLabel}
                       </div>
-                      {!customerReceiptSent && (
+
+                      {!sentExplicit && (
                         <div className="text-xs text-zinc-500 mt-1">
-                          We still generated your estimate. Please call or email if needed.
-                          {customerReceiptError ? (
+                          {emailStatusHelp}
+                          {failedExplicit && emailErr ? (
                             <div className="mt-1 text-[11px] opacity-80">
-                              Error: {String(customerReceiptError)}
+                              Error: {String(emailErr)}
                             </div>
                           ) : null}
                         </div>
@@ -603,8 +645,11 @@ export default function QuotePage() {
                               setRenderError("Missing quoteId — please resubmit.");
                               return;
                             }
+                            // We don't have photoUrls anymore unless we re-use the ones saved in result
                             const saved = (result?.photoUrls || result?.photo_urls || []) as any[];
-                            const photoUrls = Array.isArray(saved) ? saved.map(String).filter(Boolean) : [];
+                            const photoUrls = Array.isArray(saved)
+                              ? saved.map(String).filter(Boolean)
+                              : [];
                             if (!photoUrls.length) {
                               setRenderError("Missing saved photo URLs — please resubmit.");
                               return;
