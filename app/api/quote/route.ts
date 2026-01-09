@@ -7,7 +7,6 @@ export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Safe: don't crash build/runtime if env missing
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null;
@@ -20,7 +19,6 @@ function escHtml(s: unknown) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
 
@@ -411,15 +409,25 @@ export async function POST(req: Request) {
       shopLead: { sent: false, id: null, error: null },
     };
 
-    // If RESEND_API_KEY isn't set, return a clear response instead of crashing
     if (!resend) {
+      // Persist that email couldn't send (optional; column may not exist yet)
+      try {
+        await sql`
+          UPDATE quotes
+          SET receipt_email_sent = false,
+              receipt_email_error = ${"RESEND_API_KEY missing"},
+              lead_email_sent = false,
+              lead_email_error = ${"RESEND_API_KEY missing"}
+          WHERE id = ${quoteId}
+        `;
+      } catch {
+        // ignore
+      }
+
       return NextResponse.json({
         ok: true,
         quoteId,
-        email: {
-          ...results,
-          error: "RESEND_API_KEY is not set in this environment.",
-        },
+        email: { ...results, error: "RESEND_API_KEY is not set." },
         assessment: assessmentOut,
         estimate: estimateOut,
         normalized,
@@ -427,7 +435,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 1) Customer receipt (reply goes to shop)
+    // 1) Customer receipt
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
@@ -447,7 +455,7 @@ export async function POST(req: Request) {
       };
     }
 
-    // 2) Shop lead (reply-to = customer)
+    // 2) Shop lead
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
@@ -465,6 +473,26 @@ export async function POST(req: Request) {
         id: null,
         error: e?.message || String(e),
       };
+    }
+
+    // ✅ Persist BOTH statuses so admin reflects reality
+    try {
+      await sql`
+        UPDATE quotes
+        SET receipt_email_sent = ${Boolean(results.customerReceipt.sent)},
+            receipt_email_id = ${results.customerReceipt.id},
+            receipt_email_error = ${
+              results.customerReceipt.error ? String(results.customerReceipt.error) : null
+            },
+            lead_email_sent = ${Boolean(results.shopLead.sent)},
+            lead_email_id = ${results.shopLead.id},
+            lead_email_error = ${
+              results.shopLead.error ? String(results.shopLead.error) : null
+            }
+        WHERE id = ${quoteId}
+      `;
+    } catch {
+      // If columns aren't created yet, don't break the customer flow
     }
 
     return NextResponse.json({
