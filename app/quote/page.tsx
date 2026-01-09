@@ -28,6 +28,13 @@ export default function QuotePage() {
 
   const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
 
+  // ✅ required fields
+  const trimmedName = name.trim();
+  const trimmedEmail = email.trim();
+  const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
+
+  const canSubmit = !!files.length && !!trimmedName && emailLooksValid && !loading;
+
   function addFiles(newOnes: File[]) {
     setFiles((prev) => [...prev, ...newOnes].slice(0, 3));
   }
@@ -81,6 +88,22 @@ export default function QuotePage() {
       return;
     }
 
+    // ✅ required checks
+    if (!trimmedName) {
+      setError("Please enter your name.");
+      return;
+    }
+
+    if (!trimmedEmail) {
+      setError("Please enter your email.");
+      return;
+    }
+
+    if (!emailLooksValid) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+
     setLoading(true);
     try {
       // 1) Upload to Blob
@@ -93,8 +116,8 @@ export default function QuotePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           category,
-          name,
-          email,
+          name: trimmedName,
+          email: trimmedEmail,
           phone,
           notes,
           photoUrls,
@@ -178,12 +201,17 @@ export default function QuotePage() {
                 </label>
 
                 <label className="text-sm">
-                  <div className="text-zinc-300 mb-1">Name</div>
+                  <div className="text-zinc-300 mb-1">
+                    Name <span className="text-red-300">*</span>
+                  </div>
                   <input
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className={fieldClass}
+                    className={`${fieldClass} ${
+                      error && !trimmedName ? "border-red-500/60 focus:ring-red-500/40" : ""
+                    }`}
                     placeholder="Your name"
+                    required
                   />
                 </label>
 
@@ -199,13 +227,26 @@ export default function QuotePage() {
               </div>
 
               <label className="text-sm">
-                <div className="text-zinc-300 mb-1">Email</div>
+                <div className="text-zinc-300 mb-1">
+                  Email <span className="text-red-300">*</span>
+                </div>
                 <input
+                  type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className={fieldClass}
+                  className={`${fieldClass} ${
+                    error && (!trimmedEmail || !emailLooksValid)
+                      ? "border-red-500/60 focus:ring-red-500/40"
+                      : ""
+                  }`}
                   placeholder="you@email.com"
+                  required
                 />
+                {trimmedEmail && !emailLooksValid && (
+                  <div className="mt-1 text-xs text-red-300">
+                    Please enter a valid email address.
+                  </div>
+                )}
               </label>
 
               <label className="text-sm">
@@ -315,7 +356,7 @@ export default function QuotePage() {
               {error && <div className="text-sm text-red-300">{error}</div>}
 
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
-                <Button onClick={onSubmit} disabled={loading} className="rounded-2xl h-11">
+                <Button onClick={onSubmit} disabled={!canSubmit} className="rounded-2xl h-11">
                   {loading ? "Uploading + analyzing..." : "Get AI Estimate"}
                 </Button>
 
@@ -332,6 +373,13 @@ export default function QuotePage() {
                   Reset Notes / Result
                 </Button>
               </div>
+
+              {/* tiny hint under button */}
+              {!loading && (
+                <div className="text-xs text-zinc-500">
+                  <span className="text-red-300">*</span> Name and Email are required.
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -392,7 +440,7 @@ export default function QuotePage() {
                     )}
                   </div>
 
-                  {/* ✅ Contrast-fixed cards */}
+                  {/* Contrast-fixed cards */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="rounded-2xl border border-zinc-800 bg-black/40 p-4">
                       <div className="text-xs text-zinc-400">Labor</div>
