@@ -149,7 +149,7 @@ damage, recommended_repair, material_guess, assumptions (array of strings), mate
 
     // ✅ Optional: email the shop with quick info + links
     let emailSent = false;
-    const shopTo = process.env.ADMIN_EMAIL || "trimmer@maggioupholstery.com";
+    const shopTo = process.env.ADMIN_EMAIL || "maggioupholstery@gmail.com";
 
     if (resend) {
       const photosHtml = photoUrls
