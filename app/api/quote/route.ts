@@ -6,12 +6,7 @@ import { sql } from "@vercel/postgres";
 export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
-
-const SHOP_TO = "maggioupholstery@gmail.com";
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 function escHtml(s: unknown) {
   return String(s ?? "")
@@ -35,6 +30,13 @@ function cleanLine(s: unknown) {
 function toNumOrNull(v: any): number | null {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+// ✅ IMPORTANT: DB expects integers (whole dollars). Round everything we store in int columns.
+function toIntOrNull(v: any): number | null {
+  const n = toNumOrNull(v);
+  if (n == null) return null;
+  return Math.round(n);
 }
 
 function getBaseUrl() {
@@ -149,51 +151,15 @@ function buildShopLeadEmail(args: {
 }) {
   const subject = `NEW LEAD: ${cleanLine(args.category)} – ${cleanLine(args.name)}`;
 
-  const photosBlockText =
-    args.photoUrls.length > 0
-      ? args.photoUrls.map((u, i) => `Photo ${i + 1}: ${u}`).join("\n")
-      : "No photos attached.";
-
   const photosBlockHtml =
     args.photoUrls.length > 0
       ? args.photoUrls
           .map(
             (u, i) =>
-              `<div>Photo ${i + 1}: <a href="${escHtml(u)}">${escHtml(
-                u
-              )}</a></div>`
+              `<div>Photo ${i + 1}: <a href="${escHtml(u)}">${escHtml(u)}</a></div>`
           )
           .join("")
       : `<div>No photos attached.</div>`;
-
-  const text = [
-    "New Photo Quote Lead",
-    "",
-    "Customer",
-    `Name: ${cleanLine(args.name)}`,
-    `Email: ${cleanLine(args.customerEmail)}`,
-    `Phone: ${cleanLine(args.phone)}`,
-    `Category: ${cleanLine(args.category)}`,
-    `Quote ID: ${cleanLine(args.quoteId)}`,
-    args.adminUrl ? `Admin: ${args.adminUrl}` : "",
-    "",
-    "Notes",
-    args.notes?.trim() ? `“${cleanLine(args.notes)}”` : "(none)",
-    "",
-    "Estimate Range (Preliminary)",
-    args.estimateLine,
-    "",
-    "AI Summary",
-    `Damage: ${cleanLine(args.aiSummary) || "—"}`,
-    `Scope: ${cleanLine(args.scope) || "—"}`,
-    `Materials: ${cleanLine(args.materials) || "—"}`,
-    "",
-    "Photos",
-    photosBlockText,
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n");
 
   const html = `
   <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;">
@@ -234,6 +200,29 @@ function buildShopLeadEmail(args: {
     ${photosBlockHtml}
   </div>`;
 
+  const text = [
+    "New Photo Quote Lead",
+    "",
+    `Name: ${cleanLine(args.name)}`,
+    `Email: ${cleanLine(args.customerEmail)}`,
+    `Phone: ${cleanLine(args.phone)}`,
+    `Category: ${cleanLine(args.category)}`,
+    `Quote ID: ${cleanLine(args.quoteId)}`,
+    args.adminUrl ? `Admin: ${args.adminUrl}` : "",
+    "",
+    "Notes:",
+    args.notes?.trim() ? `“${cleanLine(args.notes)}”` : "(none)",
+    "",
+    "Estimate Range (Preliminary):",
+    args.estimateLine,
+    "",
+    "Photos:",
+    ...(args.photoUrls.length ? args.photoUrls.map((u, i) => `Photo ${i + 1}: ${u}`) : ["(none)"]),
+    "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return { subject, text, html };
 }
 
@@ -257,6 +246,7 @@ export async function POST(req: Request) {
       );
     }
 
+    // --- OpenAI ---
     const prompt = {
       category,
       notes,
@@ -288,42 +278,53 @@ export async function POST(req: Request) {
     const assessment = aiRaw?.assessment ?? {};
     const estimate = aiRaw?.estimate ?? {};
 
+    // --- sanitize numeric estimate fields (keep as numbers first) ---
     const laborHours = toNumOrNull(estimate.laborHours);
     const laborRate = toNumOrNull(estimate.laborRate);
-    const laborSubtotal =
+
+    const laborSubtotalNum =
       toNumOrNull(estimate.laborSubtotal) ??
       (laborHours != null && laborRate != null ? laborHours * laborRate : null);
 
-    const materialsLow = toNumOrNull(estimate.materialsLow);
-    const materialsHigh = toNumOrNull(estimate.materialsHigh);
-    const shopMinimum = toNumOrNull(estimate.shopMinimum);
+    const materialsLowNum = toNumOrNull(estimate.materialsLow);
+    const materialsHighNum = toNumOrNull(estimate.materialsHigh);
+    const shopMinimumNum = toNumOrNull(estimate.shopMinimum);
 
-    let totalLow =
+    let totalLowNum =
       toNumOrNull(estimate.totalLow) ??
-      (laborSubtotal != null && materialsLow != null
-        ? laborSubtotal + materialsLow
+      (laborSubtotalNum != null && materialsLowNum != null
+        ? laborSubtotalNum + materialsLowNum
         : null);
 
-    let totalHigh =
+    let totalHighNum =
       toNumOrNull(estimate.totalHigh) ??
-      (laborSubtotal != null && materialsHigh != null
-        ? laborSubtotal + materialsHigh
+      (laborSubtotalNum != null && materialsHighNum != null
+        ? laborSubtotalNum + materialsHighNum
         : null);
 
-    if (shopMinimum != null) {
-      if (totalLow != null) totalLow = Math.max(totalLow, shopMinimum);
-      if (totalHigh != null) totalHigh = Math.max(totalHigh, shopMinimum);
+    // Apply shop minimum (still numeric)
+    if (shopMinimumNum != null) {
+      if (totalLowNum != null) totalLowNum = Math.max(totalLowNum, shopMinimumNum);
+      if (totalHighNum != null) totalHighNum = Math.max(totalHighNum, shopMinimumNum);
     }
 
+    // ✅ Round to whole dollars for DB + UI
+    const laborSubtotal = toIntOrNull(laborSubtotalNum) ?? 0;
+    const materialsLow = toIntOrNull(materialsLowNum) ?? 0;
+    const materialsHigh = toIntOrNull(materialsHighNum) ?? 0;
+    const shopMinimum = toIntOrNull(shopMinimumNum) ?? 0;
+    const totalLow = toIntOrNull(totalLowNum) ?? 0;
+    const totalHigh = toIntOrNull(totalHighNum) ?? 0;
+
     const estimateOut = {
-      laborHours: laborHours ?? 0,
-      laborRate: laborRate ?? 0,
-      laborSubtotal: laborSubtotal ?? 0,
-      materialsLow: materialsLow ?? 0,
-      materialsHigh: materialsHigh ?? 0,
-      shopMinimum: shopMinimum ?? 0,
-      totalLow: totalLow ?? 0,
-      totalHigh: totalHigh ?? 0,
+      laborHours: toNumOrNull(laborHours) ?? 0, // keep hours (can be fractional) in JSON
+      laborRate: toIntOrNull(laborRate) ?? 0,
+      laborSubtotal,
+      materialsLow,
+      materialsHigh,
+      shopMinimum,
+      totalLow,
+      totalHigh,
       assumptions: Array.isArray(estimate.assumptions) ? estimate.assumptions : [],
     };
 
@@ -332,9 +333,7 @@ export async function POST(req: Request) {
       recommended_repair: cleanLine(assessment.recommended_repair || ""),
       material_guess: cleanLine(assessment.material_guess || ""),
       material_suggestions: cleanLine(assessment.material_suggestions || ""),
-      assumptions: Array.isArray(assessment.assumptions)
-        ? assessment.assumptions
-        : [],
+      assumptions: Array.isArray(assessment.assumptions) ? assessment.assumptions : [],
       recommended_repair_explained: cleanLine(
         assessment.recommended_repair_explained || ""
       ),
@@ -344,10 +343,11 @@ export async function POST(req: Request) {
       ai_summary: cleanLine(assessmentOut.damage || ""),
       recommended_scope: cleanLine(assessmentOut.recommended_repair || ""),
       material_recommendation: cleanLine(assessmentOut.material_suggestions || ""),
-      estimate_low: totalLow,
-      estimate_high: totalHigh,
+      estimate_low: totalLow,   // ✅ integer
+      estimate_high: totalHigh, // ✅ integer
     };
 
+    // --- DB insert (integers going into integer columns) ---
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
@@ -373,6 +373,7 @@ export async function POST(req: Request) {
 
     const adminUrl = absoluteUrl(`/admin/quotes/${quoteId}`);
 
+    // --- Email: customer receipt (NO admin/render links) ---
     const customerReceipt = buildCustomerReceiptEmail({
       name,
       customerEmail,
@@ -386,6 +387,7 @@ export async function POST(req: Request) {
       materials: normalized.material_recommendation,
     });
 
+    // --- Email: shop lead (WITH admin link + photo links) ---
     const shopLead = buildShopLeadEmail({
       name,
       customerEmail,
@@ -403,36 +405,12 @@ export async function POST(req: Request) {
 
     const fromEmail =
       process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
+    const shopTo = "maggioupholstery@gmail.com";
 
     const results: any = {
       customerReceipt: { sent: false, id: null, error: null },
       shopLead: { sent: false, id: null, error: null },
     };
-
-    if (!resend) {
-      // Back-compat flags for UI
-      return NextResponse.json({
-        ok: true,
-        quoteId,
-        email: results,
-        emailSent: false,
-        emailError: "RESEND_API_KEY is not set.",
-        assessment: assessmentOut,
-        estimate: estimateOut,
-        normalized,
-        photoUrls,
-      });
-    }
-
-    // Helper: treat provider acceptance as "sent" even if no id returned
-    function computeSent(r: any, id: string | null, err: any) {
-      // If the SDK gave an error field, treat as failed.
-      if (err) return false;
-      // If no explicit error and we got any response object back, treat as accepted.
-      if (r) return true;
-      // fallback
-      return Boolean(id);
-    }
 
     // 1) Customer receipt
     try {
@@ -442,86 +420,40 @@ export async function POST(req: Request) {
         subject: customerReceipt.subject,
         text: customerReceipt.text,
         html: customerReceipt.html,
-        replyTo: SHOP_TO,
       });
-
       const id = r?.data?.id ?? r?.id ?? null;
-      const err = r?.error ?? null;
-
-      results.customerReceipt = {
-        sent: computeSent(r, id, err),
-        id,
-        error: err,
-      };
+      results.customerReceipt = { sent: Boolean(id), id, error: r?.error ?? null };
     } catch (e: any) {
-      results.customerReceipt = {
-        sent: false,
-        id: null,
-        error: e?.message || String(e),
-      };
+      results.customerReceipt = { sent: false, id: null, error: e?.message || String(e) };
     }
 
     // 2) Shop lead (reply-to = customer)
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
-        to: [SHOP_TO],
+        to: [shopTo],
         subject: shopLead.subject,
         text: shopLead.text,
         html: shopLead.html,
         replyTo: customerEmail,
       });
-
       const id = r?.data?.id ?? r?.id ?? null;
-      const err = r?.error ?? null;
-
-      results.shopLead = {
-        sent: computeSent(r, id, err),
-        id,
-        error: err,
-      };
+      results.shopLead = { sent: Boolean(id), id, error: r?.error ?? null };
     } catch (e: any) {
-      results.shopLead = {
-        sent: false,
-        id: null,
-        error: e?.message || String(e),
-      };
-    }
-
-    // ✅ BACKWARDS COMPAT FOR YOUR CURRENT UI:
-    // Your customer page says "Sent to shop ✅" — so this should reflect the shop lead email.
-    const emailSent = Boolean(results.shopLead?.sent);
-    const emailError = results.shopLead?.error ?? null;
-
-    // (Optional) persist statuses if columns exist
-    try {
-      await sql`
-        UPDATE quotes
-        SET lead_email_sent = ${emailSent},
-            lead_email_id = ${results.shopLead?.id ?? null},
-            lead_email_error = ${emailError ? String(emailError) : null},
-            receipt_email_sent = ${Boolean(results.customerReceipt?.sent)},
-            receipt_email_id = ${results.customerReceipt?.id ?? null},
-            receipt_email_error = ${
-              results.customerReceipt?.error ? String(results.customerReceipt?.error) : null
-            }
-        WHERE id = ${quoteId}
-      `;
-    } catch {
-      // ignore
+      results.shopLead = { sent: false, id: null, error: e?.message || String(e) };
     }
 
     return NextResponse.json({
       ok: true,
       quoteId,
       email: results,
-      // ✅ these fix the existing UI instantly
-      emailSent,
-      emailError,
+      // keep these stable for the UI
       assessment: assessmentOut,
       estimate: estimateOut,
       normalized,
       photoUrls,
+      // convenience flag for the customer UI "Email status"
+      emailSent: Boolean(results?.shopLead?.sent),
     });
   } catch (err: any) {
     console.error("POST /api/quote error:", err);
