@@ -410,20 +410,6 @@ export async function POST(req: Request) {
     };
 
     if (!resend) {
-      // Persist that email couldn't send (optional; column may not exist yet)
-      try {
-        await sql`
-          UPDATE quotes
-          SET receipt_email_sent = false,
-              receipt_email_error = ${"RESEND_API_KEY missing"},
-              lead_email_sent = false,
-              lead_email_error = ${"RESEND_API_KEY missing"}
-          WHERE id = ${quoteId}
-        `;
-      } catch {
-        // ignore
-      }
-
       return NextResponse.json({
         ok: true,
         quoteId,
@@ -435,7 +421,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 1) Customer receipt
+    // 1) Customer receipt (treat "accepted" as sent even if no id returned)
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
@@ -445,8 +431,14 @@ export async function POST(req: Request) {
         html: customerReceipt.html,
         replyTo: SHOP_TO,
       });
+
       const id = r?.data?.id ?? r?.id ?? null;
-      results.customerReceipt = { sent: Boolean(id), id, error: r?.error ?? null };
+      const err = r?.error ?? null;
+
+      // ✅ Sent if we got an id OR provider did not return an error
+      const sent = Boolean(id) || !err;
+
+      results.customerReceipt = { sent, id, error: err };
     } catch (e: any) {
       results.customerReceipt = {
         sent: false,
@@ -455,7 +447,7 @@ export async function POST(req: Request) {
       };
     }
 
-    // 2) Shop lead
+    // 2) Shop lead (treat "accepted" as sent even if no id returned)
     try {
       const r: any = await resend.emails.send({
         from: fromEmail,
@@ -465,8 +457,13 @@ export async function POST(req: Request) {
         html: shopLead.html,
         replyTo: customerEmail,
       });
+
       const id = r?.data?.id ?? r?.id ?? null;
-      results.shopLead = { sent: Boolean(id), id, error: r?.error ?? null };
+      const err = r?.error ?? null;
+
+      const sent = Boolean(id) || !err;
+
+      results.shopLead = { sent, id, error: err };
     } catch (e: any) {
       results.shopLead = {
         sent: false,
@@ -475,7 +472,7 @@ export async function POST(req: Request) {
       };
     }
 
-    // ✅ Persist BOTH statuses so admin reflects reality
+    // Persist statuses for admin (if columns exist)
     try {
       await sql`
         UPDATE quotes
@@ -492,7 +489,7 @@ export async function POST(req: Request) {
         WHERE id = ${quoteId}
       `;
     } catch {
-      // If columns aren't created yet, don't break the customer flow
+      // ignore
     }
 
     return NextResponse.json({
