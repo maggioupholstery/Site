@@ -9,11 +9,12 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // Next.js 15+ types params as a Promise
   const { id } = await params;
 
-  // Admin auth check
-  const isAdmin = cookies().get("admin")?.value === "true";
+  // Admin auth check (cookies() is async in your Next build)
+  const cookieStore = await cookies();
+  const isAdmin = cookieStore.get("admin")?.value === "true";
+
   if (!isAdmin) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -29,5 +30,5 @@ export async function GET(
     return NextResponse.json({ error: "Quote not found" }, { status: 404 });
   }
 
-  return NextResponse.json(rows[0]);
+  return NextResponse.json(rows[0] as any);
 }
