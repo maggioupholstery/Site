@@ -1,21 +1,14 @@
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 import OpenAI from "openai";
-import { sql } from "@vercel/postgres";
-
-// If you use Resend, keep these imports; otherwise you can remove them.
 import { Resend } from "resend";
+import { sql } from "@vercel/postgres";
 
 export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function esc(s: unknown) {
+function escHtml(s: unknown) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -24,193 +17,249 @@ function esc(s: unknown) {
     .replace(/'/g, "&#039;");
 }
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json().catch(() => ({} as any));
+function money(n: unknown) {
+  const num = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(num)) return "";
+  return num.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
 
-    const category = String(body?.category ?? "auto");
-    const name = String(body?.name ?? "").trim();
-    const email = String(body?.email ?? "").trim();
-    const phone = String(body?.phone ?? "").trim();
-    const notes = String(body?.notes ?? "").trim();
+function cleanLine(s: unknown) {
+  return String(s ?? "").trim().replace(/\s+/g, " ");
+}
+
+function buildEmail({
+  name,
+  email,
+  phone,
+  category,
+  quoteId,
+  notes,
+  photoUrls,
+  ai,
+}: {
+  name: string;
+  email: string;
+  phone: string;
+  category: string;
+  quoteId: string;
+  notes: string;
+  photoUrls: string[];
+  ai: {
+    ai_summary: string;
+    recommended_scope: string;
+    material_recommendation: string;
+    estimate_low: number | null;
+    estimate_high: number | null;
+  };
+}) {
+  const photosBlockText =
+    photoUrls.length > 0
+      ? photoUrls.map((u, i) => `Photo ${i + 1}: ${u}`).join("\n")
+      : "No photos attached.";
+
+  const photosBlockHtml =
+    photoUrls.length > 0
+      ? photoUrls
+          .map(
+            (u, i) =>
+              `<div>Photo ${i + 1}: <a href="${escHtml(u)}">${escHtml(
+                u
+              )}</a></div>`
+          )
+          .join("")
+      : `<div>No photos attached.</div>`;
+
+  const estimateLine =
+    ai.estimate_low != null && ai.estimate_high != null
+      ? `${money(ai.estimate_low)} – ${money(ai.estimate_high)}`
+      : ai.estimate_low != null
+      ? `${money(ai.estimate_low)}+`
+      : ai.estimate_high != null
+      ? `Up to ${money(ai.estimate_high)}`
+      : "TBD (needs review)";
+
+  // 🔎 VERSION STAMP (temporary)
+  const subject = `[v2-clean-email] New ${cleanLine(category)} Photo Quote – ${cleanLine(name)}`;
+
+  const text = [
+    "New Photo Quote Received",
+    "[v2-clean-email] Template active",
+    "",
+    "Customer Information",
+    `Name: ${cleanLine(name)}`,
+    `Email: ${cleanLine(email)}`,
+    `Phone: ${cleanLine(phone)}`,
+    `Category: ${cleanLine(category)}`,
+    `Quote ID: ${cleanLine(quoteId)}`,
+    "",
+    "Customer Notes",
+    notes?.trim() ? `“${cleanLine(notes)}”` : "(none)",
+    "",
+    "AI Summary (internal helper)",
+    `• Project Type / Summary: ${cleanLine(ai.ai_summary) || "—"}`,
+    `• Recommended Scope: ${cleanLine(ai.recommended_scope) || "—"}`,
+    `• Materials: ${cleanLine(ai.material_recommendation) || "—"}`,
+    "",
+    "Estimated Range (Preliminary)",
+    estimateLine,
+    "(Final pricing subject to inspection + material selection.)",
+    "",
+    "Photos",
+    photosBlockText,
+    "",
+  ].join("\n");
+
+  const html = `
+  <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;">
+    <div style="color:#999;font-size:12px;">[v2-clean-email] Template active</div>
+
+    <h2 style="margin:0 0 12px 0;">New Photo Quote Received</h2>
+
+    <h3 style="margin:16px 0 6px 0;">Customer Information</h3>
+    <div><b>Name:</b> ${escHtml(name)}</div>
+    <div><b>Email:</b> ${escHtml(email)}</div>
+    <div><b>Phone:</b> ${escHtml(phone)}</div>
+    <div><b>Category:</b> ${escHtml(category)}</div>
+    <div><b>Quote ID:</b> ${escHtml(quoteId)}</div>
+
+    <h3 style="margin:16px 0 6px 0;">Customer Notes</h3>
+    <div>${notes?.trim() ? `“${escHtml(notes)}”` : "(none)"}</div>
+
+    <h3 style="margin:16px 0 6px 0;">AI Summary (internal helper)</h3>
+    <ul style="margin:6px 0 0 20px;">
+      <li><b>Project Type / Summary:</b> ${escHtml(ai.ai_summary || "—")}</li>
+      <li><b>Recommended Scope:</b> ${escHtml(ai.recommended_scope || "—")}</li>
+      <li><b>Materials:</b> ${escHtml(ai.material_recommendation || "—")}</li>
+    </ul>
+
+    <h3 style="margin:16px 0 6px 0;">Estimated Range (Preliminary)</h3>
+    <div style="font-size:16px;"><b>${escHtml(estimateLine)}</b></div>
+    <div style="color:#444; margin-top:4px;">
+      Final pricing subject to inspection + material selection.
+    </div>
+
+    <h3 style="margin:16px 0 6px 0;">Photos</h3>
+    ${photosBlockHtml}
+  </div>`;
+
+  return { subject, text, html };
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    const name = cleanLine(body?.name);
+    const email = cleanLine(body?.email);
+    const phone = cleanLine(body?.phone);
+    const category = cleanLine(body?.category);
+    const notes = String(body?.notes ?? "");
     const photoUrls: string[] = Array.isArray(body?.photoUrls)
-      ? body.photoUrls.map((x: any) => String(x)).filter(Boolean)
+      ? body.photoUrls.map((u: any) => String(u)).filter(Boolean)
       : [];
 
-    // ✅ enforce required name/email server-side
-    if (!name) {
-      return NextResponse.json({ error: "Name is required." }, { status: 400 });
-    }
-    if (!email) {
-      return NextResponse.json({ error: "Email is required." }, { status: 400 });
-    }
-    if (!isValidEmail(email)) {
-      return NextResponse.json({ error: "Please enter a valid email address." }, { status: 400 });
-    }
-    if (photoUrls.length < 1) {
-      return NextResponse.json({ error: "At least one photo is required." }, { status: 400 });
+    if (!name || !email || !phone || !category) {
+      return NextResponse.json(
+        { ok: false, error: "Missing required fields." },
+        { status: 400 }
+      );
     }
 
-    // ✅ Create the quote row FIRST so we can return a quoteId quickly
-    // Store files as JSON for admin to display later.
-    const filesJson = JSON.stringify(
-      photoUrls.map((url) => ({
-        url,
-        name: url.split("/").pop() || "photo",
-        contentType: "image/*",
-      }))
-    );
-
-    const insert = await sql`
-      INSERT INTO quotes (category, name, email, phone, notes, files)
-      VALUES (${category}, ${name}, ${email}, ${phone}, ${notes}, ${filesJson})
-      RETURNING id
-    `;
-
-    const quoteId = String(insert.rows?.[0]?.id ?? "");
-
-    // ✅ Phase 1: analysis + estimate (NO concept render here)
-    // Keep it lean. We only do text output and pricing logic.
-    const prompt = `
-You are an expert in custom marine and auto upholstery.
-Given the customer's category and notes, and the fact that photos were provided,
-produce:
-1) A short damage summary
-2) A recommended repair approach (customer-friendly)
-3) A material guess: vinyl | leather | marine_vinyl | unknown
-4) Any assumptions (bullets)
-
-Category: ${category}
-Customer notes: ${notes || "(none)"}
-
-Return JSON with keys:
-damage, recommended_repair, material_guess, assumptions (array of strings), material_suggestions, recommended_repair_explained
-`.trim();
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.4,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-
-    const assessmentRaw = completion.choices?.[0]?.message?.content || "{}";
-    let assessment: any = {};
-    try {
-      assessment = JSON.parse(assessmentRaw);
-    } catch {
-      assessment = { damage: "", recommended_repair: "", material_guess: "unknown", assumptions: [] };
-    }
-
-    // ✅ Simple estimate logic (you can replace with your existing pricing lib if you already have it)
-    // This keeps the endpoint fast and predictable.
-    const laborRate = 140; // adjust if you want
-    const baseHours =
-      category === "marine" ? 6 :
-      category === "motorcycle" ? 3 :
-      5;
-
-    const laborHours = baseHours;
-    const laborSubtotal = Math.round(laborHours * laborRate);
-
-    const materialsLow = category === "marine" ? 200 : 150;
-    const materialsHigh = category === "marine" ? 450 : 350;
-
-    const shopMinimum = 250;
-
-    const totalLow = Math.max(shopMinimum, laborSubtotal + materialsLow);
-    const totalHigh = Math.max(shopMinimum, laborSubtotal + materialsHigh);
-
-    const estimate = {
-      laborHours,
-      laborRate,
-      laborSubtotal,
-      materialsLow,
-      materialsHigh,
-      shopMinimum,
-      totalLow,
-      totalHigh,
-      assumptions: Array.isArray(assessment?.assumptions) ? assessment.assumptions : [],
+    const prompt = {
+      category,
+      notes,
+      photoUrls,
+      instruction:
+        "Return JSON with two keys: assessment and estimate. " +
+        "assessment: { damage, recommended_repair, material_guess, assumptions[], material_suggestions, recommended_repair_explained }. " +
+        "estimate: { laborHours, laborRate, laborSubtotal, materialsLow, materialsHigh, shopMinimum, totalLow, totalHigh, assumptions[] }.",
     };
 
-    // ✅ Update quote with analysis/estimate (so admin can see it)
-    await sql`
-      UPDATE quotes
-      SET
-        assessment = ${JSON.stringify(assessment)},
-        estimate = ${JSON.stringify(estimate)}
-      WHERE id = ${quoteId}
-    `.catch(() => {});
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "You are an expert upholstery estimator." },
+        { role: "user", content: JSON.stringify(prompt) },
+      ],
+      response_format: { type: "json_object" },
+    });
 
-    // ✅ Optional: email the shop with quick info + links
-    let emailSent = false;
-    const shopTo = process.env.ADMIN_EMAIL || "maggioupholstery@gmail.com";
-
-    if (resend) {
-      const photosHtml = photoUrls
-        .map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(u)}</a></li>`)
-        .join("");
-
-      const html = `
-        <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;">
-          <h2>New Photo Quote</h2>
-          <p><b>Name:</b> ${esc(name)}<br/>
-             <b>Email:</b> ${esc(email)}<br/>
-             <b>Phone:</b> ${esc(phone)}<br/>
-             <b>Category:</b> ${esc(category)}<br/>
-             <b>Quote ID:</b> ${esc(quoteId)}</p>
-
-          <p><b>Notes:</b><br/>${esc(notes).replace(/\n/g, "<br/>")}</p>
-
-          <h3>Photos</h3>
-          <ul>${photosHtml}</ul>
-
-          <h3>AI Assessment</h3>
-          <pre style="background:#111; color:#eee; padding:12px; border-radius:12px; overflow:auto;">
-${esc(JSON.stringify({ assessment, estimate }, null, 2))}
-          </pre>
-        </div>
-      `.trim();
-
-      try {
-        const sent = await resend.emails.send({
-          from: "Maggio Upholstery <quotes@maggioupholstery.com>",
-          to: shopTo,
-          subject: `New Photo Quote (${category}) — ${name}`,
-          html,
-        });
-
-        emailSent = !!sent?.data?.id;
-
-        await sql`
-          UPDATE quotes
-          SET email_sent = ${emailSent}
-          WHERE id = ${quoteId}
-        `.catch(() => {});
-      } catch {
-        emailSent = false;
-      }
+    const rawText = completion.choices?.[0]?.message?.content ?? "{}";
+    let aiRaw: any = {};
+    try {
+      aiRaw = JSON.parse(rawText);
+    } catch {
+      aiRaw = { error: "Could not parse AI JSON", rawText };
     }
 
-    // ✅ Return FAST (no preview here)
-    return NextResponse.json({
-  ok: true,
-  quoteId,
-  emailSent,
-  assessment,
-  estimate,
-  photoUrls, // ✅ add this so the client can retry render without re-uploading
-  previewImageDataUrl: "", // intentionally empty now
-});
+    const assessment = aiRaw?.assessment ?? {};
+    const estimate = aiRaw?.estimate ?? {};
 
-  } catch (e: any) {
+    const normalized = {
+      ai_summary: cleanLine(assessment.damage || ""),
+      recommended_scope: cleanLine(assessment.recommended_repair || ""),
+      material_recommendation: cleanLine(
+        assessment.material_suggestions || ""
+      ),
+      estimate_low: Number.isFinite(Number(estimate.totalLow))
+        ? Number(estimate.totalLow)
+        : null,
+      estimate_high: Number.isFinite(Number(estimate.totalHigh))
+        ? Number(estimate.totalHigh)
+        : null,
+    };
+
+    const inserted = await sql<{ id: string }>`
+      insert into quotes
+        (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
+         ai_summary, recommended_scope, material_recommendation,
+         estimate_low, estimate_high)
+      values
+        (${name}, ${email}, ${phone}, ${category}, ${notes},
+         ${JSON.stringify(photoUrls)}::jsonb,
+         ${JSON.stringify(aiRaw)}::jsonb,
+         ${normalized.ai_summary},
+         ${normalized.recommended_scope},
+         ${normalized.material_recommendation},
+         ${normalized.estimate_low},
+         ${normalized.estimate_high})
+      returning id
+    `;
+
+    const quoteId = inserted.rows[0].id;
+
+    const { subject, text, html } = buildEmail({
+      name,
+      email,
+      phone,
+      category,
+      quoteId,
+      notes,
+      photoUrls,
+      ai: normalized,
+    });
+
+    const emailResult = await resend.emails.send({
+      from:
+        process.env.QUOTE_FROM ||
+        "Maggio Upholstery <quotes@maggioupholstery.com>",
+      to: [process.env.QUOTE_INBOX_TO || "jdmaggio@gmail.com"],
+      subject,
+      text,
+      html,
+      replyTo: email,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      quoteId,
+      emailSent: !!emailResult?.data?.id,
+    });
+  } catch (err: any) {
+    console.error("POST /api/quote error:", err);
     return NextResponse.json(
-      { error: e?.message || "Quote failed" },
+      { ok: false, error: err?.message || "Server error" },
       { status: 500 }
     );
   }
