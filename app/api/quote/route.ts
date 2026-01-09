@@ -27,6 +27,11 @@ function cleanLine(s: unknown) {
   return String(s ?? "").trim().replace(/\s+/g, " ");
 }
 
+function toNumOrNull(v: any): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function buildEmail({
   name,
   email,
@@ -78,12 +83,10 @@ function buildEmail({
       ? `Up to ${money(ai.estimate_high)}`
       : "TBD (needs review)";
 
-  // 🔎 VERSION STAMP (temporary)
-  const subject = `[v2-clean-email] New ${cleanLine(category)} Photo Quote – ${cleanLine(name)}`;
+  const subject = `New ${cleanLine(category)} Photo Quote – ${cleanLine(name)}`;
 
   const text = [
     "New Photo Quote Received",
-    "[v2-clean-email] Template active",
     "",
     "Customer Information",
     `Name: ${cleanLine(name)}`,
@@ -111,8 +114,6 @@ function buildEmail({
 
   const html = `
   <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;">
-    <div style="color:#999;font-size:12px;">[v2-clean-email] Template active</div>
-
     <h2 style="margin:0 0 12px 0;">New Photo Quote Received</h2>
 
     <h3 style="margin:16px 0 6px 0;">Customer Information</h3>
@@ -134,9 +135,7 @@ function buildEmail({
 
     <h3 style="margin:16px 0 6px 0;">Estimated Range (Preliminary)</h3>
     <div style="font-size:16px;"><b>${escHtml(estimateLine)}</b></div>
-    <div style="color:#444; margin-top:4px;">
-      Final pricing subject to inspection + material selection.
-    </div>
+    <div style="color:#444; margin-top:4px;">Final pricing subject to inspection + material selection.</div>
 
     <h3 style="margin:16px 0 6px 0;">Photos</h3>
     ${photosBlockHtml}
@@ -165,6 +164,7 @@ export async function POST(req: Request) {
       );
     }
 
+    // 1) Ask OpenAI for assessment (keep it raw)
     const prompt = {
       category,
       notes,
@@ -196,29 +196,78 @@ export async function POST(req: Request) {
     const assessment = aiRaw?.assessment ?? {};
     const estimate = aiRaw?.estimate ?? {};
 
-    const normalized = {
-      ai_summary: cleanLine(assessment.damage || ""),
-      recommended_scope: cleanLine(assessment.recommended_repair || ""),
-      material_recommendation: cleanLine(
-        assessment.material_suggestions || ""
-      ),
-      estimate_low: Number.isFinite(Number(estimate.totalLow))
-        ? Number(estimate.totalLow)
-        : null,
-      estimate_high: Number.isFinite(Number(estimate.totalHigh))
-        ? Number(estimate.totalHigh)
-        : null,
+    // --- sanitize / normalize numeric estimate fields ---
+    const laborHours = toNumOrNull(estimate.laborHours);
+    const laborRate = toNumOrNull(estimate.laborRate);
+    const laborSubtotal =
+      toNumOrNull(estimate.laborSubtotal) ??
+      (laborHours != null && laborRate != null ? laborHours * laborRate : null);
+
+    const materialsLow = toNumOrNull(estimate.materialsLow);
+    const materialsHigh = toNumOrNull(estimate.materialsHigh);
+    const shopMinimum = toNumOrNull(estimate.shopMinimum);
+
+    // totals: if missing, compute; then apply shop minimum if present
+    let totalLow =
+      toNumOrNull(estimate.totalLow) ??
+      (laborSubtotal != null && materialsLow != null
+        ? laborSubtotal + materialsLow
+        : null);
+
+    let totalHigh =
+      toNumOrNull(estimate.totalHigh) ??
+      (laborSubtotal != null && materialsHigh != null
+        ? laborSubtotal + materialsHigh
+        : null);
+
+    if (shopMinimum != null) {
+      if (totalLow != null) totalLow = Math.max(totalLow, shopMinimum);
+      if (totalHigh != null) totalHigh = Math.max(totalHigh, shopMinimum);
+    }
+
+    const estimateOut = {
+      laborHours: laborHours ?? 0,
+      laborRate: laborRate ?? 0,
+      laborSubtotal: laborSubtotal ?? 0,
+      materialsLow: materialsLow ?? 0,
+      materialsHigh: materialsHigh ?? 0,
+      shopMinimum: shopMinimum ?? 0,
+      totalLow: totalLow ?? 0,
+      totalHigh: totalHigh ?? 0,
+      assumptions: Array.isArray(estimate.assumptions) ? estimate.assumptions : [],
     };
 
+    const assessmentOut = {
+      damage: cleanLine(assessment.damage || ""),
+      recommended_repair: cleanLine(assessment.recommended_repair || ""),
+      material_guess: cleanLine(assessment.material_guess || ""),
+      material_suggestions: cleanLine(assessment.material_suggestions || ""),
+      assumptions: Array.isArray(assessment.assumptions)
+        ? assessment.assumptions
+        : [],
+      recommended_repair_explained: cleanLine(
+        assessment.recommended_repair_explained || ""
+      ),
+    };
+
+    // 2) Normalized fields for DB/email/admin
+    const normalized = {
+      ai_summary: cleanLine(assessmentOut.damage || ""),
+      recommended_scope: cleanLine(assessmentOut.recommended_repair || ""),
+      material_recommendation: cleanLine(assessmentOut.material_suggestions || ""),
+      estimate_low: totalLow,
+      estimate_high: totalHigh,
+    };
+
+    // 3) Write to DB (raw + normalized)
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
-         ai_summary, recommended_scope, material_recommendation,
-         estimate_low, estimate_high)
+         ai_summary, recommended_scope, material_recommendation, estimate_low, estimate_high)
       values
         (${name}, ${email}, ${phone}, ${category}, ${notes},
          ${JSON.stringify(photoUrls)}::jsonb,
-         ${JSON.stringify(aiRaw)}::jsonb,
+         ${JSON.stringify({ assessment: assessmentOut, estimate: estimateOut })}::jsonb,
          ${normalized.ai_summary},
          ${normalized.recommended_scope},
          ${normalized.material_recommendation},
@@ -227,8 +276,9 @@ export async function POST(req: Request) {
       returning id
     `;
 
-    const quoteId = inserted.rows[0].id;
+    const quoteId = inserted.rows?.[0]?.id;
 
+    // 4) Send clean email (no raw JSON dump)
     const { subject, text, html } = buildEmail({
       name,
       email,
@@ -240,21 +290,33 @@ export async function POST(req: Request) {
       ai: normalized,
     });
 
+    const toEmail = process.env.QUOTE_INBOX_TO || "jdmaggio@gmail.com";
+    const fromEmail =
+      process.env.QUOTE_FROM || "Maggio Upholstery <quotes@maggioupholstery.com>";
+
     const emailResult = await resend.emails.send({
-      from:
-        process.env.QUOTE_FROM ||
-        "Maggio Upholstery <quotes@maggioupholstery.com>",
-      to: [process.env.QUOTE_INBOX_TO || "jdmaggio@gmail.com"],
+      from: fromEmail,
+      to: [toEmail],
       subject,
       text,
       html,
       replyTo: email,
     });
 
+    // 5) IMPORTANT: return the objects your UI expects
     return NextResponse.json({
       ok: true,
       quoteId,
-      emailSent: !!emailResult?.data?.id,
+      email: {
+        sent: !!emailResult?.data?.id,
+        id: emailResult?.data?.id ?? null,
+        error: emailResult?.error ?? null,
+      },
+      assessment: assessmentOut,
+      estimate: estimateOut,
+      // Keep these for admin UI or debugging
+      normalized,
+      photoUrls,
     });
   } catch (err: any) {
     console.error("POST /api/quote error:", err);
