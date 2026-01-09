@@ -14,12 +14,17 @@ export default function QuotePage() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
+
   const [files, setFiles] = useState<File[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false); // phase 1: upload + analysis
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // ✅ progress UI
+  // ✅ phase 2: render preview after we already show analysis
+  const [rendering, setRendering] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  // ✅ progress UI (phase 1 only)
   const [stage, setStage] = useState<string>("");
   const [progress, setProgress] = useState<number>(0);
 
@@ -36,7 +41,7 @@ export default function QuotePage() {
   const trimmedName = name.trim();
   const trimmedEmail = email.trim();
   const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
-  const canSubmit = !!files.length && !!trimmedName && emailLooksValid && !loading;
+  const canSubmit = !!files.length && !!trimmedName && emailLooksValid && !loading && !rendering;
 
   function addFiles(newOnes: File[]) {
     setFiles((prev) => [...prev, ...newOnes].slice(0, 3));
@@ -72,7 +77,7 @@ export default function QuotePage() {
     const timer = setInterval(() => {
       const elapsed = Date.now() - t0;
 
-      // Fast early, slower later, never hit 100 until we finish
+      // Fast early, slower later, never hit 100 until phase 1 finishes
       const target =
         elapsed < 4000
           ? 10 + elapsed / 80
@@ -109,9 +114,52 @@ export default function QuotePage() {
     return Promise.all(uploads);
   }
 
+  async function kickOffRender(params: {
+    quoteId: string;
+    photoUrls: string[];
+    category: QuoteCategory;
+  }) {
+    setRendering(true);
+    setRenderError(null);
+
+    try {
+      const res2 = await fetch("/api/quote/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+
+      const { rawText, json } = await safeReadJson(res2);
+
+      if (!res2.ok) {
+        const apiMsg =
+          (json as any)?.error ||
+          (json as any)?.message ||
+          (rawText ? rawText.slice(0, 180) : "");
+        throw new Error(apiMsg || `Render failed (HTTP ${res2.status}).`);
+      }
+
+      if (!json) throw new Error("Render returned empty response.");
+
+      const previewImageDataUrl = String((json as any)?.previewImageDataUrl ?? "").trim();
+
+      // Merge preview into existing result
+      setResult((prev: any) => ({
+        ...(prev || {}),
+        previewImageDataUrl,
+      }));
+    } catch (e: any) {
+      setRenderError(e?.message || "Preview render failed");
+    } finally {
+      setRendering(false);
+    }
+  }
+
   async function onSubmit() {
     setError(null);
     setResult(null);
+    setRenderError(null);
+    setRendering(false);
 
     if (!files.length) {
       setError("Please add at least one photo.");
@@ -143,9 +191,9 @@ export default function QuotePage() {
       const blobs = await uploadPhotosToBlob(files);
       const photoUrls = blobs.map((b) => b.url);
 
-      setStageAndFloor("Analyzing damage…", 45);
+      setStageAndFloor("Analyzing damage…", 55);
 
-      // 2) Send URLs to API
+      // 2) Fast endpoint: analysis + estimate ONLY
       const res = await fetch("/api/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,8 +207,6 @@ export default function QuotePage() {
         }),
       });
 
-      setStageAndFloor("Rendering concept…", 75);
-
       const { rawText, json } = await safeReadJson(res);
 
       if (!res.ok) {
@@ -173,15 +219,24 @@ export default function QuotePage() {
 
       if (!json) throw new Error("Server returned an empty or non-JSON response. Please try again.");
 
-      setResult(json);
-
-      setStageAndFloor("Finalizing…", 95);
+      setStageAndFloor("Finalizing…", 92);
       setProgress(100);
       setStage("Done ✅");
 
+      // ✅ Show analysis immediately
+      setResult(json);
+
+      // Scroll to results immediately
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 150);
+
+      // ✅ Now render preview in the background
+      const quoteId = String((json as any)?.quoteId ?? "").trim();
+      if (quoteId) {
+        // Don’t block the UI
+        kickOffRender({ quoteId, photoUrls, category });
+      }
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
       setStage("");
@@ -194,7 +249,7 @@ export default function QuotePage() {
       setTimeout(() => {
         setStage("");
         setProgress(0);
-      }, 1200);
+      }, 1000);
     }
   }
 
@@ -345,7 +400,7 @@ export default function QuotePage() {
                   <Button
                     type="button"
                     className="rounded-2xl h-11"
-                    disabled={files.length >= 3 || loading}
+                    disabled={files.length >= 3 || loading || rendering}
                     onClick={() => cameraRef.current?.click()}
                   >
                     Take Photo {files.length < 3 ? `(${files.length + 1}/3)` : ""}
@@ -355,7 +410,7 @@ export default function QuotePage() {
                     type="button"
                     variant="outline"
                     className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-                    disabled={files.length >= 3 || loading}
+                    disabled={files.length >= 3 || loading || rendering}
                     onClick={() => uploadRef.current?.click()}
                   >
                     Upload From Library
@@ -365,11 +420,13 @@ export default function QuotePage() {
                     type="button"
                     variant="outline"
                     className="rounded-2xl h-11 border-zinc-800 bg-transparent text-zinc-200 hover:bg-zinc-900"
-                    disabled={loading}
+                    disabled={loading || rendering}
                     onClick={() => {
                       setFiles([]);
                       setError(null);
                       setResult(null);
+                      setRenderError(null);
+                      setRendering(false);
                     }}
                   >
                     Clear Photos
@@ -405,24 +462,26 @@ export default function QuotePage() {
 
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
                 <Button onClick={onSubmit} disabled={!canSubmit} className="rounded-2xl h-11">
-                  {loading ? "Uploading + analyzing..." : "Get AI Estimate"}
+                  {loading ? "Uploading + analyzing..." : rendering ? "Generating preview..." : "Get AI Estimate"}
                 </Button>
 
                 <Button
                   variant="outline"
                   className="rounded-2xl h-11 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
-                  disabled={loading}
+                  disabled={loading || rendering}
                   onClick={() => {
                     setNotes("");
                     setResult(null);
                     setError(null);
+                    setRenderError(null);
+                    setRendering(false);
                   }}
                 >
                   Reset Notes / Result
                 </Button>
               </div>
 
-              {/* ✅ Progress indicator */}
+              {/* ✅ Phase-1 Progress indicator */}
               {loading && (
                 <div className="pt-2">
                   <div className="flex items-center justify-between text-xs text-zinc-400">
@@ -438,7 +497,7 @@ export default function QuotePage() {
                   </div>
 
                   <div className="mt-2 text-xs text-zinc-500">
-                    Larger photos and complex jobs can take a bit longer.
+                    We’ll show the estimate first, then the concept preview loads after.
                   </div>
                 </div>
               )}
@@ -480,7 +539,7 @@ export default function QuotePage() {
                     </div>
                   </div>
 
-                  {/* Preview */}
+                  {/* Preview (now async after analysis) */}
                   <div className="rounded-2xl border border-zinc-900 bg-gradient-to-b from-black/50 to-black/25 p-4">
                     <div className="flex items-end justify-between gap-3">
                       <div className="text-lg font-semibold text-zinc-100">Restored Preview</div>
@@ -488,9 +547,8 @@ export default function QuotePage() {
                     </div>
 
                     <div className="mt-2 text-xs text-zinc-300">
-                      This is an AI-generated “after” preview based on your photo. Final materials,
-                      color match, and stitching details are confirmed after inspection and sample
-                      approval.
+                      We’ll show your estimate immediately. The concept render may take a bit longer
+                      and will appear here when it’s ready.
                     </div>
 
                     {previewImageDataUrl ? (
@@ -501,9 +559,49 @@ export default function QuotePage() {
                           className="w-full h-auto object-cover"
                         />
                       </div>
+                    ) : rendering ? (
+                      <div className="mt-3 rounded-2xl border border-zinc-900 bg-black/30 p-4">
+                        <div className="text-sm text-zinc-200 font-semibold">
+                          Generating your concept render…
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          You can review the repair plan below while this finishes.
+                        </div>
+                        <div className="mt-3 h-2 w-full overflow-hidden rounded-full border border-zinc-800 bg-black/30">
+                          <div className="h-full w-2/3 rounded-full bg-zinc-200 animate-pulse" />
+                        </div>
+                      </div>
+                    ) : renderError ? (
+                      <div className="mt-3 rounded-2xl border border-red-900/50 bg-black/30 p-4">
+                        <div className="text-sm text-red-300">Preview failed to generate.</div>
+                        <div className="mt-1 text-xs text-zinc-500">{renderError}</div>
+
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mt-3 rounded-2xl h-10 border-zinc-700 bg-transparent text-zinc-100 hover:bg-zinc-900"
+                          onClick={() => {
+                            const quoteId = String(result?.quoteId ?? "").trim();
+                            if (!quoteId) {
+                              setRenderError("Missing quoteId — please resubmit.");
+                              return;
+                            }
+                            // We don't have photoUrls anymore unless we re-use the ones saved in result
+                            const saved = (result?.photoUrls || result?.photo_urls || []) as any[];
+                            const photoUrls = Array.isArray(saved) ? saved.map(String).filter(Boolean) : [];
+                            if (!photoUrls.length) {
+                              setRenderError("Missing saved photo URLs — please resubmit.");
+                              return;
+                            }
+                            kickOffRender({ quoteId, photoUrls, category });
+                          }}
+                        >
+                          Retry Preview
+                        </Button>
+                      </div>
                     ) : (
                       <div className="mt-3 text-sm text-zinc-200">
-                        Preview unavailable for this submission. (We still generated your estimate.)
+                        Preview is still processing. If it doesn’t appear, you can retry.
                       </div>
                     )}
                   </div>
