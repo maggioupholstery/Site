@@ -118,6 +118,13 @@ export function estimateFromAssessment(a: AiAssessment): Estimate {
 }
 
 // ---- helpers ----
+async function fileToDataUrl(file: File): Promise<string> {
+  const ab = await file.arrayBuffer();
+  const base64 = Buffer.from(ab).toString("base64");
+  const mime = file.type || "image/jpeg";
+  return `data:${mime};base64,${base64}`;
+}
+
 async function urlToDataUrl(url: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
@@ -172,6 +179,16 @@ function extractGeneratedImageBase64(resp: any): string | null {
 }
 
 // ---- email attachment helpers ----
+async function fileToEmailAttachment(file: File, fallbackName: string) {
+  const ab = await file.arrayBuffer();
+  const buf = Buffer.from(ab);
+  return {
+    filename: (file as any).name || fallbackName,
+    content: buf,
+    contentType: (file as any).type || "application/octet-stream",
+  };
+}
+
 async function urlToEmailAttachment(url: string, filename: string) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch image for attachment (${res.status})`);
@@ -182,6 +199,7 @@ async function urlToEmailAttachment(url: string, filename: string) {
 }
 
 function dataUrlToEmailAttachment(dataUrl: string, filename: string) {
+  // Expected: data:<mime>;base64,<data>
   const idx = dataUrl.indexOf("base64,");
   if (idx === -1) throw new Error("Invalid data URL (missing base64,)");
   const header = dataUrl.slice(0, idx);
@@ -221,28 +239,70 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const ct = req.headers.get("content-type") || "";
-    if (!ct.includes("application/json")) {
-      return json({ error: "Send application/json with photoUrls." }, { status: 415 });
+
+    let name = "";
+    let email = "";
+    let phone = "";
+    let category = "auto" as QuoteCategory;
+    let notes = "";
+
+    // Blob URLs path
+    let photoUrls: string[] = [];
+
+    // Legacy: multipart path (kept for compatibility)
+    let selectedFiles: File[] = [];
+
+    if (ct.includes("application/json")) {
+      const body: any = await req.json();
+
+      name = String(body?.name || "");
+      email = String(body?.email || "");
+      phone = String(body?.phone || "");
+      category = String(body?.category || "auto") as QuoteCategory;
+      notes = String(body?.notes || "");
+
+      photoUrls = Array.isArray(body?.photoUrls) ? body.photoUrls.slice(0, 3).map(String) : [];
+
+      if (photoUrls.length === 0) {
+        return json({ error: "No photoUrls provided." }, { status: 400 });
+      }
+    } else {
+      // Old formData mode
+      const form = await req.formData();
+
+      name = String(form.get("name") || "");
+      email = String(form.get("email") || "");
+      phone = String(form.get("phone") || "");
+      category = String(form.get("category") || "auto") as QuoteCategory;
+      notes = String(form.get("notes") || "");
+
+      const files = (form.getAll("photos") as File[]).filter(
+        (f) => f && typeof (f as any).size === "number" && (f as any).size > 0
+      );
+
+      if (files.length === 0) {
+        return json({ error: "No photos uploaded." }, { status: 400 });
+      }
+
+      selectedFiles = files.slice(0, 3);
+
+      const MAX_MB_PER_IMAGE = 6;
+      for (const f of selectedFiles) {
+        const mb = (f as any).size / (1024 * 1024);
+        if (mb > MAX_MB_PER_IMAGE) {
+          return json(
+            { error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.` },
+            { status: 413 }
+          );
+        }
+      }
     }
 
-    const body: any = await req.json();
-
-    const name = String(body?.name || "");
-    const email = String(body?.email || "");
-    const phone = String(body?.phone || "");
-    const category = String(body?.category || "auto") as QuoteCategory;
-    const notes = String(body?.notes || "");
-
-    const photoUrls: string[] = Array.isArray(body?.photoUrls)
-      ? body.photoUrls.slice(0, 3).map(String)
-      : [];
-
-    if (photoUrls.length === 0) {
-      return json({ error: "No photoUrls provided." }, { status: 400 });
-    }
-
-    // Build dataUrls for OpenAI (from Blob URLs)
-    const dataUrls = await Promise.all(photoUrls.map(urlToDataUrl));
+    // Build dataUrls for OpenAI (either from Blob URLs or files)
+    const dataUrls =
+      photoUrls.length > 0
+        ? await Promise.all(photoUrls.map(urlToDataUrl))
+        : await Promise.all(selectedFiles.map(fileToDataUrl));
 
     const schema = {
       type: "object",
@@ -250,14 +310,27 @@ export async function POST(req: Request) {
       properties: {
         category: { type: "string", enum: ["auto", "marine", "motorcycle"] },
         item: { type: "string" },
+
         material_guess: { type: "string", enum: ["vinyl", "leather", "marine_vinyl", "unknown"] },
-        material_suggestions: { type: "string" },
+
+        material_suggestions: {
+          type: "string",
+          description:
+            "2–4 material options + why. Mention marine-grade + UV thread for marine. Keep to 2–6 sentences.",
+        },
+
         damage: { type: "string" },
+
         recommended_repair: {
           type: "string",
           enum: ["stitch_repair", "panel_replace", "recover", "foam_replace", "unknown"],
         },
-        recommended_repair_explained: { type: "string" },
+
+        recommended_repair_explained: {
+          type: "string",
+          description: "Explain the shop steps in plain English. 4–8 short sentences. No fluff.",
+        },
+
         complexity: { type: "string", enum: ["low", "medium", "high"] },
         notes: { type: "string" },
       },
@@ -417,15 +490,55 @@ export async function POST(req: Request) {
       assumptions: Array.isArray((estimate as any).assumptions) ? (estimate as any).assumptions : [],
     };
 
-    // --------- 4) Email (Resend) ----------
+    // --------- 4) Save to Postgres (NEW) ----------
+    let dbSaved = false;
+    let dbError: string | null = null;
+    let quoteId: string | null = null;
+
+    try {
+      // IMPORTANT:
+      // photo_urls is stored as JSONB so we pass a STRING here (Primitive) and cast to jsonb in SQL.
+      // This avoids the "string[] is not assignable to Primitive" build error.
+      const insert = await sql<{
+        id: string;
+      }>`
+        INSERT INTO quotes (
+          status,
+          category, name, email, phone, notes,
+          photo_urls,
+          assessment,
+          estimate,
+          preview_image_data_url,
+          preview_error
+        )
+        VALUES (
+          'new',
+          ${category}, ${name}, ${email}, ${phone}, ${notes},
+          ${JSON.stringify(photoUrls)}::jsonb,
+          ${JSON.stringify(normalizedAssessment)}::jsonb,
+          ${JSON.stringify(safeEstimate)}::jsonb,
+          ${previewImageDataUrl}, ${previewError}
+        )
+        RETURNING id;
+      `;
+
+      quoteId = insert.rows?.[0]?.id ?? null;
+      dbSaved = true;
+    } catch (e: any) {
+      dbError = e?.message || "DB insert failed.";
+      console.error("DB insert failed:", e);
+    }
+
+    // --------- 5) Email (Resend) ----------
     const resendApiKey = process.env.RESEND_API_KEY || "";
     const to = process.env.QUOTE_TO_EMAIL || "";
-    const from = process.env.QUOTE_FROM_EMAIL || "";
+    const from = process.env.QUOTE_FROM_EMAIL || ""; // verified sender
 
     let emailSent = false;
     let emailError: string | null = null;
     let emailId: string | null = null;
 
+    // track customer receipt status
     let receiptSent = false;
     let receiptError: string | null = null;
 
@@ -445,6 +558,7 @@ export async function POST(req: Request) {
         const html =
           `<div style="font-family: ui-sans-serif,system-ui,-apple-system; line-height:1.45;">` +
           `<h2>New Photo Quote</h2>` +
+          (quoteId ? `<p><b>Quote ID:</b> ${esc(quoteId)}</p>` : "") +
           `<p><b>Name:</b> ${esc(name)}<br/>` +
           `<b>Email:</b> ${esc(email)}<br/>` +
           `<b>Phone:</b> ${esc(phone)}<br/>` +
@@ -474,11 +588,27 @@ export async function POST(req: Request) {
           `<p>${esc(notes || "(none)")}</p>` +
           `</div>`;
 
+        // Attach original photos + AI preview
         const attachments: Array<{ filename: string; content: Buffer; contentType?: string }> = [];
 
-        for (let i = 0; i < photoUrls.length; i++) {
-          const idx = String(i + 1).padStart(2, "0");
-          attachments.push(await urlToEmailAttachment(photoUrls[i], `original-${idx}.jpg`));
+        if (photoUrls.length) {
+          for (let i = 0; i < photoUrls.length; i++) {
+            const idx = String(i + 1).padStart(2, "0");
+            attachments.push(await urlToEmailAttachment(photoUrls[i], `original-${idx}.jpg`));
+          }
+        } else {
+          for (let i = 0; i < selectedFiles.length; i++) {
+            const f = selectedFiles[i];
+            const ext =
+              (f as any).type === "image/png"
+                ? "png"
+                : (f as any).type === "image/webp"
+                ? "webp"
+                : "jpg";
+            attachments.push(
+              await fileToEmailAttachment(f, `original-${String(i + 1).padStart(2, "0")}.${ext}`)
+            );
+          }
         }
 
         if (previewImageDataUrl) {
@@ -489,6 +619,7 @@ export async function POST(req: Request) {
           }
         }
 
+        // Internal email to shop
         const resp = await resend.emails.send({
           from,
           to,
@@ -507,6 +638,7 @@ export async function POST(req: Request) {
           emailSent = true;
           emailId = maybeData?.id ?? null;
 
+          // Customer receipt
           if (email) {
             try {
               const receiptSubject = "We received your photo quote request";
@@ -554,55 +686,34 @@ export async function POST(req: Request) {
       }
     }
 
-    // --------- 5) Save to Postgres (NEW) ----------
-    let dbId: number | null = null;
-    try {
-      const inserted = await sql`
-        insert into quote_requests (
-          status,
-          category, name, email, phone, notes,
-          photo_urls,
-          assessment, estimate,
-          preview_image_data_url, preview_error,
-          email_sent, email_error, email_id,
-          receipt_sent, receipt_error
-        ) values (
-          'new',
-          ${category}, ${name}, ${email}, ${phone}, ${notes},
-          ${photoUrls}::text[],
-          ${JSON.stringify(normalizedAssessment)}::jsonb,
-          ${JSON.stringify(safeEstimate)}::jsonb,
-          ${previewImageDataUrl}, ${previewError},
-          ${emailSent}, ${emailError}, ${emailId},
-          ${receiptSent}, ${receiptError}
-        )
-        returning id
-      `;
-      dbId = Number((inserted as any)?.rows?.[0]?.id ?? null);
-    } catch (e: any) {
-      console.error("DB insert failed:", e?.message || e);
-      // Don’t fail the customer response if DB insert fails
-    }
-
     return json({
       version: "ai-v5-blob+postgres+materials-process-preview+resend",
-      dbId,
       assessment: normalizedAssessment,
       estimate: safeEstimate,
 
+      // preview
+      previewImageDataUrl,
+      previewError,
+
+      // email
       emailSent,
       emailError,
       emailId,
 
+      // receipt
       receiptSent,
       receiptError,
 
-      previewImageDataUrl,
-      previewError,
+      // db
+      dbSaved,
+      dbError,
+      quoteId,
 
       debug: {
-        hasPostgresUrl: Boolean(process.env.POSTGRES_URL),
-        blobMode: true,
+        blobMode: photoUrls.length > 0,
+        hasResendKey: Boolean(resendApiKey),
+        hasQuoteTo: Boolean(to),
+        hasQuoteFrom: Boolean(from),
       },
     });
   } catch (e: any) {
