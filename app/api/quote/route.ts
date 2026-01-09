@@ -124,6 +124,16 @@ async function fileToDataUrl(file: File): Promise<string> {
   return `data:${mime};base64,${base64}`;
 }
 
+async function urlToDataUrl(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+  const ab = await res.arrayBuffer();
+  const buf = Buffer.from(ab);
+  const contentType = res.headers.get("content-type") || "image/jpeg";
+  const b64 = buf.toString("base64");
+  return `data:${contentType};base64,${b64}`;
+}
+
 function esc(s: unknown) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -178,6 +188,15 @@ async function fileToEmailAttachment(file: File, fallbackName: string) {
   };
 }
 
+async function urlToEmailAttachment(url: string, filename: string) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch image for attachment (${res.status})`);
+  const ab = await res.arrayBuffer();
+  const buf = Buffer.from(ab);
+  const contentType = res.headers.get("content-type") || "application/octet-stream";
+  return { filename, content: buf, contentType };
+}
+
 function dataUrlToEmailAttachment(dataUrl: string, filename: string) {
   // Expected: data:<mime>;base64,<data>
   const idx = dataUrl.indexOf("base64,");
@@ -211,43 +230,78 @@ export async function GET() {
   return json({
     ok: true,
     message:
-      "Quote endpoint is alive. Send a POST multipart/form-data with fields: category,name,email,phone,notes and photos (1–3).",
-    version: "ai-v3-materials-process-preview+resend",
+      "Quote endpoint is alive. Send POST as application/json with fields: category,name,email,phone,notes,photoUrls (1–3).",
+    version: "ai-v4-blob+materials-process-preview+resend",
   });
 }
 
 export async function POST(req: Request) {
   try {
-    const form = await req.formData();
+    const ct = req.headers.get("content-type") || "";
 
-    const name = String(form.get("name") || "");
-    const email = String(form.get("email") || "");
-    const phone = String(form.get("phone") || "");
-    const category = String(form.get("category") || "auto") as QuoteCategory;
-    const notes = String(form.get("notes") || "");
+    let name = "";
+    let email = "";
+    let phone = "";
+    let category = "auto" as QuoteCategory;
+    let notes = "";
 
-    const files = (form.getAll("photos") as File[]).filter(
-      (f) => f && typeof (f as any).size === "number" && (f as any).size > 0
-    );
+    // New: blob URLs path
+    let photoUrls: string[] = [];
 
-    if (files.length === 0) {
-      return json({ error: "No photos uploaded." }, { status: 400 });
-    }
+    // Legacy: multipart path (kept for compatibility)
+    let selectedFiles: File[] = [];
 
-    const selected = files.slice(0, 3);
+    if (ct.includes("application/json")) {
+      const body: any = await req.json();
 
-    const MAX_MB_PER_IMAGE = 6;
-    for (const f of selected) {
-      const mb = (f as any).size / (1024 * 1024);
-      if (mb > MAX_MB_PER_IMAGE) {
-        return json(
-          { error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.` },
-          { status: 413 }
-        );
+      name = String(body?.name || "");
+      email = String(body?.email || "");
+      phone = String(body?.phone || "");
+      category = String(body?.category || "auto") as QuoteCategory;
+      notes = String(body?.notes || "");
+
+      photoUrls = Array.isArray(body?.photoUrls) ? body.photoUrls.slice(0, 3).map(String) : [];
+
+      if (photoUrls.length === 0) {
+        return json({ error: "No photoUrls provided." }, { status: 400 });
+      }
+    } else {
+      const form = await req.formData();
+
+      name = String(form.get("name") || "");
+      email = String(form.get("email") || "");
+      phone = String(form.get("phone") || "");
+      category = String(form.get("category") || "auto") as QuoteCategory;
+      notes = String(form.get("notes") || "");
+
+      const files = (form.getAll("photos") as File[]).filter(
+        (f) => f && typeof (f as any).size === "number" && (f as any).size > 0
+      );
+
+      if (files.length === 0) {
+        return json({ error: "No photos uploaded." }, { status: 400 });
+      }
+
+      selectedFiles = files.slice(0, 3);
+
+      // Keep a sanity check for legacy uploads
+      const MAX_MB_PER_IMAGE = 6;
+      for (const f of selectedFiles) {
+        const mb = (f as any).size / (1024 * 1024);
+        if (mb > MAX_MB_PER_IMAGE) {
+          return json(
+            { error: `Image too large. Please upload photos under ${MAX_MB_PER_IMAGE}MB each.` },
+            { status: 413 }
+          );
+        }
       }
     }
 
-    const dataUrls = await Promise.all(selected.map(fileToDataUrl));
+    // Build dataUrls for OpenAI (either from Blob URLs or files)
+    const dataUrls =
+      photoUrls.length > 0
+        ? await Promise.all(photoUrls.map(urlToDataUrl))
+        : await Promise.all(selectedFiles.map(fileToDataUrl));
 
     const schema = {
       type: "object",
@@ -273,8 +327,7 @@ export async function POST(req: Request) {
 
         recommended_repair_explained: {
           type: "string",
-          description:
-            "Explain the shop steps in plain English. 4–8 short sentences. No fluff.",
+          description: "Explain the shop steps in plain English. 4–8 short sentences. No fluff.",
         },
 
         complexity: { type: "string", enum: ["low", "medium", "high"] },
@@ -311,7 +364,8 @@ export async function POST(req: Request) {
                 "- If uncertain, use 'unknown' and explain what photo/measurement is needed.\n" +
                 "- Avoid vague wording. Prefer specific upholstery terms.\n" +
                 "- recommended_repair_explained should describe what we physically do: remove cover, inspect foam, pattern, cut, sew, topstitch, add backing/foam as needed, reinstall, final fit.\n" +
-                "- material_suggestions: 2–4 options + why (durability/UV/mildew for marine, matching grain/color, thread choice like UV polyester for marine). Keep it customer-friendly.",
+                "- material_suggestions: 2–4 options + why (durability/UV/mildew for marine, matching grain/color, thread choice like UV polyester for marine). Keep it customer-friendly.\n" +
+                "- IMPORTANT: Use the customer's notes as requirements/constraints when describing the repair approach.",
             },
           ],
         },
@@ -320,7 +374,9 @@ export async function POST(req: Request) {
           content: [
             {
               type: "input_text",
-              text: `Category selected: ${category}\nCustomer notes: ${notes || "(none)"}`,
+              text: `Category selected: ${category}\nCUSTOMER NOTES (treat as requirements):\n${
+                notes || "(none)"
+              }`,
             },
             ...dataUrls.map((url) => ({
               type: "input_image" as const,
@@ -442,7 +498,7 @@ export async function POST(req: Request) {
     let emailError: string | null = null;
     let emailId: string | null = null;
 
-    // NEW: track customer receipt status
+    // track customer receipt status
     let receiptSent = false;
     let receiptError: string | null = null;
 
@@ -498,27 +554,30 @@ export async function POST(req: Request) {
           contentType?: string;
         }> = [];
 
-        for (let i = 0; i < selected.length; i++) {
-          const f = selected[i];
-          const ext =
-            (f as any).type === "image/png"
-              ? "png"
-              : (f as any).type === "image/webp"
-              ? "webp"
-              : "jpg";
-          attachments.push(
-            await fileToEmailAttachment(
-              f,
-              `original-${String(i + 1).padStart(2, "0")}.${ext}`
-            )
-          );
+        if (photoUrls.length) {
+          for (let i = 0; i < photoUrls.length; i++) {
+            const idx = String(i + 1).padStart(2, "0");
+            attachments.push(await urlToEmailAttachment(photoUrls[i], `original-${idx}.jpg`));
+          }
+        } else {
+          for (let i = 0; i < selectedFiles.length; i++) {
+            const f = selectedFiles[i];
+            const ext =
+              (f as any).type === "image/png"
+                ? "png"
+                : (f as any).type === "image/webp"
+                ? "webp"
+                : "jpg";
+            attachments.push(
+              await fileToEmailAttachment(f, `original-${String(i + 1).padStart(2, "0")}.${ext}`)
+            );
+          }
         }
 
         if (previewImageDataUrl) {
           try {
             attachments.push(dataUrlToEmailAttachment(previewImageDataUrl, "ai-preview.png"));
           } catch (e: any) {
-            // Don’t fail the email if attachment conversion fails
             console.error("Failed to attach AI preview:", e?.message || e);
           }
         }
@@ -533,7 +592,6 @@ export async function POST(req: Request) {
           attachments: attachments.length ? attachments : undefined,
         });
 
-        // Resend returns { data, error }
         const maybeError = (resp as any)?.error;
         const maybeData = (resp as any)?.data;
 
@@ -543,7 +601,7 @@ export async function POST(req: Request) {
           emailSent = true;
           emailId = maybeData?.id ?? null;
 
-          // ---- Customer receipt (NEW) ----
+          // ---- Customer receipt ----
           if (email) {
             try {
               const receiptSubject = "We received your photo quote request";
@@ -571,7 +629,7 @@ export async function POST(req: Request) {
                 to: email,
                 subject: receiptSubject,
                 html: receiptHtml,
-                replyTo: to, // replies come back to the shop
+                replyTo: to,
               });
 
               const receiptMaybeError = (receiptResp as any)?.error;
@@ -592,7 +650,7 @@ export async function POST(req: Request) {
     }
 
     return json({
-      version: "ai-v3-materials-process-preview+resend",
+      version: "ai-v4-blob+materials-process-preview+resend",
       assessment: normalizedAssessment,
       estimate: safeEstimate,
 
@@ -609,11 +667,11 @@ export async function POST(req: Request) {
       previewImageDataUrl,
       previewError,
 
-      // env debug (safe booleans)
       debug: {
         hasResendKey: Boolean(resendApiKey),
         hasQuoteTo: Boolean(to),
         hasQuoteFrom: Boolean(from),
+        blobMode: photoUrls.length > 0,
       },
     });
   } catch (e: any) {
