@@ -28,7 +28,6 @@ export async function POST(request: Request): Promise<NextResponse> {
         console.log("Blob upload completed:", {
           url: blob.url,
           pathname: blob.pathname,
-          size: blob.size,
           contentType: blob.contentType,
           tokenPayload,
         });
