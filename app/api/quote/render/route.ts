@@ -9,7 +9,13 @@ export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+// Keep null-safe like you had
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
+
+// Per your requirement: fixed shop inbox
+const SHOP_TO = "maggioupholstery@gmail.com";
 
 function cleanCategory(x: unknown) {
   const v = String(x || "auto");
@@ -23,14 +29,6 @@ function esc(s: unknown) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
-}
-
-function getShopTo() {
-  return (
-    process.env.QUOTE_TO_EMAIL ||
-    process.env.ADMIN_EMAIL ||
-    "maggioupholstery@gmail.com"
-  );
 }
 
 function siteBaseUrl(req: NextRequest) {
@@ -84,7 +82,7 @@ export async function POST(req: NextRequest) {
       // ignore
     }
 
-    // 2) Pull quote details for the email (so you get the exact lead + context)
+    // 2) Pull quote details for email context
     let quoteRow: any = null;
     try {
       const q = await sql`
@@ -97,6 +95,8 @@ export async function POST(req: NextRequest) {
     } catch {
       quoteRow = null;
     }
+
+    const customerEmail = String(quoteRow?.email || "").trim();
 
     // 3) Generate the concept render (slow)
     const prompt = `
@@ -124,7 +124,7 @@ Return ONE image.
             ...photoUrls.slice(0, 3).map((url) => ({
               type: "input_image" as const,
               image_url: url,
-              detail: "auto" as const, // required by TS types
+              detail: "auto" as const,
             })),
           ],
         },
@@ -152,7 +152,7 @@ Return ONE image.
       );
     }
 
-    // 4) Convert to binary + upload to Vercel Blob so you have a real URL
+    // 4) Convert to binary + upload to Vercel Blob so you have a real URL (for admin/shop use)
     const pngBuffer = Buffer.from(base64, "base64");
     const blobPath = `renders/${quoteId}-${Date.now()}.png`;
 
@@ -163,8 +163,7 @@ Return ONE image.
         contentType: "image/png",
       });
       previewImageUrl = putRes.url;
-    } catch (e: any) {
-      // If blob upload fails, we can still return data URL to client
+    } catch {
       previewImageUrl = "";
     }
 
@@ -172,7 +171,6 @@ Return ONE image.
     const previewImageDataUrl = `data:image/png;base64,${base64}`;
 
     // 5) Store it in DB
-    // (We attempt preview_image_url too; if column isn't there, ignore)
     try {
       await sql`
         UPDATE quotes
@@ -191,25 +189,32 @@ Return ONE image.
           WHERE id = ${quoteId}
         `;
       } catch {
-        // ignore (column may not exist)
+        // ignore
       }
     }
 
-    // 6) Email you the render (second email) so you always receive what they saw
-    // Even if customer leaves, YOU can trigger render from admin later and still get this email.
-    let renderEmailSent = false;
-    let renderEmailError: string | null = null;
+    // 6) Email: TWO emails for this stage
+    //    - customer render: NO admin link, NO render link, embed image inline (CID)
+    //    - shop render: WITH admin link + render link
+    let shopRenderSent = false;
+    let shopRenderError: string | null = null;
+
+    let customerRenderSent = false;
+    let customerRenderError: string | null = null;
 
     if (resend) {
-      const shopTo = getShopTo();
+      const fromEmail =
+        process.env.QUOTE_FROM ||
+        "Maggio Upholstery <quotes@maggioupholstery.com>";
 
       const n = esc(quoteRow?.name || "");
-      const em = esc(quoteRow?.email || "");
+      const em = esc(customerEmail || "");
       const ph = esc(quoteRow?.phone || "");
       const cat = esc(quoteRow?.category || category);
-      const nt = esc(quoteRow?.notes || "");
+      const ntRaw = String(quoteRow?.notes || "");
+      const nt = esc(ntRaw);
 
-      // Try to list submitted photo URLs from DB if present
+      // ---- SHOP EMAIL (WITH LINKS) ----
       let submittedPhotoLinks = "";
       try {
         const files = quoteRow?.files;
@@ -228,7 +233,12 @@ Return ONE image.
         if (urls.length) {
           submittedPhotoLinks = urls
             .slice(0, 6)
-            .map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(u)}</a></li>`)
+            .map(
+              (u) =>
+                `<li><a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(
+                  u
+                )}</a></li>`
+            )
             .join("");
         }
       } catch {
@@ -236,18 +246,22 @@ Return ONE image.
       }
 
       const renderLinkHtml = previewImageUrl
-        ? `<p><b>Render link:</b> <a href="${esc(previewImageUrl)}" target="_blank" rel="noreferrer">${esc(previewImageUrl)}</a></p>`
+        ? `<p><b>Render link:</b> <a href="${esc(
+            previewImageUrl
+          )}" target="_blank" rel="noreferrer">${esc(previewImageUrl)}</a></p>`
         : `<p><b>Render:</b> (Blob upload failed — open admin link to view)</p>`;
 
       const renderImgHtml = previewImageUrl
         ? `<div style="margin-top:12px;">
              <a href="${esc(previewImageUrl)}" target="_blank" rel="noreferrer">
-               <img src="${esc(previewImageUrl)}" alt="Concept render" style="max-width:100%; border-radius:16px; border:1px solid #333;" />
+               <img src="${esc(
+                 previewImageUrl
+               )}" alt="Concept render" style="max-width:100%; border-radius:16px; border:1px solid #333;" />
              </a>
            </div>`
         : "";
 
-      const html = `
+      const shopHtml = `
         <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;">
           <h2>Concept Render Ready</h2>
 
@@ -259,12 +273,18 @@ Return ONE image.
             <b>Quote ID:</b> ${esc(quoteId)}
           </p>
 
-          <p><b>Admin:</b> <a href="${esc(adminLink)}" target="_blank" rel="noreferrer">${esc(adminLink)}</a></p>
+          <p><b>Admin:</b> <a href="${esc(
+            adminLink
+          )}" target="_blank" rel="noreferrer">${esc(adminLink)}</a></p>
           ${renderLinkHtml}
 
           ${renderImgHtml}
 
-          ${nt ? `<p><b>Notes:</b><br/>${nt.replace(/\n/g, "<br/>")}</p>` : ""}
+          ${
+            ntRaw.trim()
+              ? `<p><b>Notes:</b><br/>${esc(ntRaw).replace(/\n/g, "<br/>")}</p>`
+              : ""
+          }
 
           ${
             submittedPhotoLinks
@@ -275,28 +295,92 @@ Return ONE image.
       `.trim();
 
       try {
-        const sent = await resend.emails.send({
-          from: "Maggio Upholstery <quotes@maggioupholstery.com>",
-          to: shopTo,
+        const sent: any = await resend.emails.send({
+          from: fromEmail,
+          to: [SHOP_TO],
           subject: `Concept Render Ready — ${quoteRow?.name || "New Lead"} (${category})`,
-          html,
+          html: shopHtml,
+          replyTo: customerEmail || undefined,
         });
 
-        renderEmailSent = !!sent?.data?.id;
+        const id = sent?.data?.id ?? sent?.id ?? null;
+        shopRenderSent = Boolean(id);
 
-        // optional: track status
+        // optional: track status (safe if column exists)
         try {
           await sql`
             UPDATE quotes
-            SET render_email_sent = ${renderEmailSent}
+            SET render_email_sent = ${shopRenderSent}
             WHERE id = ${quoteId}
           `;
         } catch {
-          // ignore (column may not exist)
+          // ignore
         }
       } catch (e: any) {
-        renderEmailSent = false;
-        renderEmailError = e?.message || "Render email failed";
+        shopRenderSent = false;
+        shopRenderError = e?.message || "Shop render email failed";
+      }
+
+      // ---- CUSTOMER EMAIL (NO LINKS, INLINE IMAGE VIA CID) ----
+      // Only send if we have a customer email on file
+      if (customerEmail) {
+        const customerText = [
+          "Your concept render is ready!",
+          "",
+          "Here’s the concept preview based on your photos.",
+          "If you’d like changes (colors, materials, stitch pattern), reply to this email and tell us what you want adjusted.",
+          "",
+          "Maggio Upholstery",
+          "Call/Text: (443) 280-9371",
+        ].join("\n");
+
+        // No admin link. No render URL text. No <a href="..."> wrappers.
+        // Embed image inline using CID. :contentReference[oaicite:1]{index=1}
+        const customerHtml = `
+          <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;">
+            <h2>Your concept render is ready</h2>
+            <p>Here’s the concept preview based on your photos.</p>
+            <p style="color:#444;">
+              If you’d like changes (colors, materials, stitch pattern), just reply to this email and tell us what you want adjusted.
+            </p>
+
+            <div style="margin-top:14px;">
+              <img src="cid:concept-render" alt="Concept render" style="max-width:100%; border-radius:16px; border:1px solid #ddd;" />
+            </div>
+
+            <div style="margin-top:16px;">
+              <b>Maggio Upholstery</b><br/>
+              Call/Text: (443) 280-9371
+            </div>
+          </div>
+        `.trim();
+
+        try {
+          const sent: any = await resend.emails.send({
+            from: fromEmail,
+            to: [customerEmail],
+            subject: "Your concept render is ready — Maggio Upholstery",
+            text: customerText,
+            html: customerHtml,
+            // Attach the render and reference via CID
+            attachments: [
+              {
+                filename: "concept-render.png",
+                content: pngBuffer, // buffer supported :contentReference[oaicite:2]{index=2}
+                contentType: "image/png",
+                contentId: "concept-render",
+              } as any,
+            ],
+            // Customer can reply to shop easily
+            replyTo: SHOP_TO,
+          });
+
+          const id = sent?.data?.id ?? sent?.id ?? null;
+          customerRenderSent = Boolean(id);
+        } catch (e: any) {
+          customerRenderSent = false;
+          customerRenderError = e?.message || "Customer render email failed";
+        }
       }
     }
 
@@ -305,8 +389,10 @@ Return ONE image.
       previewImageDataUrl,
       cached: false,
       adminLink,
-      renderEmailSent,
-      renderEmailError,
+      shopRenderSent,
+      shopRenderError,
+      customerRenderSent,
+      customerRenderError,
     });
   } catch (e: any) {
     return NextResponse.json(
