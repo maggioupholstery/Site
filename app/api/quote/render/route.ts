@@ -41,11 +41,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ previewImageDataUrl: prev, cached: true });
       }
     } catch {
-      // ignore DB read errors here; we'll still try to generate
+      // ignore
     }
 
-    // 2) Generate a concept "after" render using the image_generation tool
-    // The tool returns base64 (no data URL prefix), we’ll convert to data URL. :contentReference[oaicite:1]{index=1}
+    // 2) Generate a concept "after" render
     const prompt = `
 Create a single photorealistic "after" concept render of an upholstery repair.
 
@@ -68,10 +67,10 @@ Return ONE image.
           role: "user",
           content: [
             { type: "input_text", text: prompt },
-            // include up to 3 images as context
             ...photoUrls.slice(0, 3).map((url) => ({
               type: "input_image" as const,
               image_url: url,
+              detail: "auto" as const, // ✅ REQUIRED by TS types
             })),
           ],
         },
@@ -79,18 +78,15 @@ Return ONE image.
       tools: [
         {
           type: "image_generation",
-          // tool options: safe + high-ish quality
-          // you can tweak size if you want faster (1024x1024 is usually quickest)
           quality: "medium",
           size: "1024x1024",
           background: "opaque",
         } as any,
       ],
-      // force the tool call so it doesn't just chat back
       tool_choice: { type: "image_generation" } as any,
     });
 
-    // Pull the base64 result from the image_generation_call output :contentReference[oaicite:2]{index=2}
+    // Pull base64 out of image_generation_call output
     const base64 = (response.output || [])
       .filter((o: any) => o?.type === "image_generation_call")
       .map((o: any) => o?.result)
@@ -103,10 +99,9 @@ Return ONE image.
       );
     }
 
-    // Convert to data URL so your existing frontend <img src="..."> works immediately
     const previewImageDataUrl = `data:image/png;base64,${base64}`;
 
-    // 3) Store it for admin + future loads
+    // 3) Store it (if column exists)
     try {
       await sql`
         UPDATE quotes
@@ -114,7 +109,7 @@ Return ONE image.
         WHERE id = ${quoteId}
       `;
     } catch {
-      // If the column doesn't exist yet or DB hiccups, still return the image.
+      // ignore
     }
 
     return NextResponse.json({ previewImageDataUrl, cached: false });
