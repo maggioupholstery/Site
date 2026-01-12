@@ -32,7 +32,7 @@ function toNumOrNull(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// ✅ IMPORTANT: DB expects integers (whole dollars). Round everything we store in int columns.
+// DB expects integer dollars for estimate fields
 function toIntOrNull(v: any): number | null {
   const n = toNumOrNull(v);
   if (n == null) return null;
@@ -278,7 +278,6 @@ export async function POST(req: Request) {
     const assessment = aiRaw?.assessment ?? {};
     const estimate = aiRaw?.estimate ?? {};
 
-    // --- sanitize numeric estimate fields (keep as numbers first) ---
     const laborHours = toNumOrNull(estimate.laborHours);
     const laborRate = toNumOrNull(estimate.laborRate);
 
@@ -302,13 +301,12 @@ export async function POST(req: Request) {
         ? laborSubtotalNum + materialsHighNum
         : null);
 
-    // Apply shop minimum (still numeric)
     if (shopMinimumNum != null) {
       if (totalLowNum != null) totalLowNum = Math.max(totalLowNum, shopMinimumNum);
       if (totalHighNum != null) totalHighNum = Math.max(totalHighNum, shopMinimumNum);
     }
 
-    // ✅ Round to whole dollars for DB + UI
+    // ✅ integer dollars for DB + UI
     const laborSubtotal = toIntOrNull(laborSubtotalNum) ?? 0;
     const materialsLow = toIntOrNull(materialsLowNum) ?? 0;
     const materialsHigh = toIntOrNull(materialsHighNum) ?? 0;
@@ -317,7 +315,7 @@ export async function POST(req: Request) {
     const totalHigh = toIntOrNull(totalHighNum) ?? 0;
 
     const estimateOut = {
-      laborHours: toNumOrNull(laborHours) ?? 0, // keep hours (can be fractional) in JSON
+      laborHours: laborHours ?? 0, // hours can be fractional
       laborRate: toIntOrNull(laborRate) ?? 0,
       laborSubtotal,
       materialsLow,
@@ -343,15 +341,16 @@ export async function POST(req: Request) {
       ai_summary: cleanLine(assessmentOut.damage || ""),
       recommended_scope: cleanLine(assessmentOut.recommended_repair || ""),
       material_recommendation: cleanLine(assessmentOut.material_suggestions || ""),
-      estimate_low: totalLow,   // ✅ integer
-      estimate_high: totalHigh, // ✅ integer
+      estimate_low: totalLow,
+      estimate_high: totalHigh,
     };
 
-    // --- DB insert (integers going into integer columns) ---
+    // --- DB insert ---
     const inserted = await sql<{ id: string }>`
       insert into quotes
         (name, email, phone, category, notes, photo_urls, ai_assessment_raw,
-         ai_summary, recommended_scope, material_recommendation, estimate_low, estimate_high)
+         ai_summary, recommended_scope, material_recommendation, estimate_low, estimate_high,
+         lead_email_sent, receipt_email_sent)
       values
         (${name}, ${customerEmail}, ${phone}, ${category}, ${notes},
          ${JSON.stringify(photoUrls)}::jsonb,
@@ -360,7 +359,9 @@ export async function POST(req: Request) {
          ${normalized.recommended_scope},
          ${normalized.material_recommendation},
          ${normalized.estimate_low},
-         ${normalized.estimate_high})
+         ${normalized.estimate_high},
+         false,
+         false)
       returning id
     `;
 
@@ -373,7 +374,6 @@ export async function POST(req: Request) {
 
     const adminUrl = absoluteUrl(`/admin/quotes/${quoteId}`);
 
-    // --- Email: customer receipt (NO admin/render links) ---
     const customerReceipt = buildCustomerReceiptEmail({
       name,
       customerEmail,
@@ -387,7 +387,6 @@ export async function POST(req: Request) {
       materials: normalized.material_recommendation,
     });
 
-    // --- Email: shop lead (WITH admin link + photo links) ---
     const shopLead = buildShopLeadEmail({
       name,
       customerEmail,
@@ -443,16 +442,35 @@ export async function POST(req: Request) {
       results.shopLead = { sent: false, id: null, error: e?.message || String(e) };
     }
 
+    // ✅ Persist email statuses to DB so Admin matches reality
+    try {
+      await sql`
+        update quotes
+        set
+          lead_email_sent = ${Boolean(results.shopLead.sent)},
+          lead_email_id = ${results.shopLead.id},
+          lead_email_error = ${results.shopLead.error ? String(results.shopLead.error) : null},
+          receipt_email_sent = ${Boolean(results.customerReceipt.sent)},
+          receipt_email_id = ${results.customerReceipt.id},
+          receipt_email_error = ${
+            results.customerReceipt.error ? String(results.customerReceipt.error) : null
+          }
+        where id = ${quoteId}::uuid
+      `;
+    } catch (e: any) {
+      // Don't block the customer flow if status update fails
+      console.error("Failed updating email status fields:", e?.message || e);
+    }
+
     return NextResponse.json({
       ok: true,
       quoteId,
       email: results,
-      // keep these stable for the UI
       assessment: assessmentOut,
       estimate: estimateOut,
       normalized,
       photoUrls,
-      // convenience flag for the customer UI "Email status"
+      // convenience flag for the customer page "Email status"
       emailSent: Boolean(results?.shopLead?.sent),
     });
   } catch (err: any) {
