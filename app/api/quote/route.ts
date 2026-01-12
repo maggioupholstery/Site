@@ -151,14 +151,32 @@ function buildShopLeadEmail(args: {
 }) {
   const subject = `NEW LEAD: ${cleanLine(args.category)} – ${cleanLine(args.name)}`;
 
+  // ✅ Links + inline images (email-friendly)
   const photosBlockHtml =
     args.photoUrls.length > 0
-      ? args.photoUrls
-          .map(
-            (u, i) =>
-              `<div>Photo ${i + 1}: <a href="${escHtml(u)}">${escHtml(u)}</a></div>`
-          )
-          .join("")
+      ? `
+      <div style="margin-top:8px;">
+        ${args.photoUrls
+          .map((u, i) => {
+            const url = escHtml(u);
+            return `
+              <div style="margin:0 0 14px 0;">
+                <div style="margin:0 0 6px 0;">
+                  Photo ${i + 1}: <a href="${url}" target="_blank" rel="noreferrer">${url}</a>
+                </div>
+                <a href="${url}" target="_blank" rel="noreferrer" style="text-decoration:none;">
+                  <img
+                    src="${url}"
+                    alt="Customer photo ${i + 1}"
+                    style="display:block; width:100%; max-width:680px; height:auto; border-radius:14px; border:1px solid #333;"
+                  />
+                </a>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+      `
       : `<div>No photos attached.</div>`;
 
   const html = `
@@ -170,9 +188,7 @@ function buildShopLeadEmail(args: {
     <div><b>Email:</b> <a href="mailto:${escHtml(args.customerEmail)}">${escHtml(
     args.customerEmail
   )}</a></div>
-    <div><b>Phone:</b> <a href="tel:${escHtml(args.phone)}">${escHtml(
-    args.phone
-  )}</a></div>
+    <div><b>Phone:</b> <a href="tel:${escHtml(args.phone)}">${escHtml(args.phone)}</a></div>
     <div><b>Category:</b> ${escHtml(args.category)}</div>
     <div><b>Quote ID:</b> ${escHtml(args.quoteId)}</div>
     ${
@@ -196,7 +212,7 @@ function buildShopLeadEmail(args: {
       <li><b>Materials:</b> ${escHtml(args.materials || "—")}</li>
     </ul>
 
-    <h3 style="margin:16px 0 6px 0;">Photos</h3>
+    <h3 style="margin:16px 0 6px 0;">Photos (inline)</h3>
     ${photosBlockHtml}
   </div>`;
 
@@ -442,7 +458,7 @@ export async function POST(req: Request) {
       results.shopLead = { sent: false, id: null, error: e?.message || String(e) };
     }
 
-    // ✅ Persist email statuses to DB so Admin matches reality
+    // Persist email statuses to DB
     try {
       await sql`
         update quotes
@@ -458,7 +474,6 @@ export async function POST(req: Request) {
         where id = ${quoteId}::uuid
       `;
     } catch (e: any) {
-      // Don't block the customer flow if status update fails
       console.error("Failed updating email status fields:", e?.message || e);
     }
 
@@ -470,7 +485,6 @@ export async function POST(req: Request) {
       estimate: estimateOut,
       normalized,
       photoUrls,
-      // convenience flag for the customer page "Email status"
       emailSent: Boolean(results?.shopLead?.sent),
     });
   } catch (err: any) {
