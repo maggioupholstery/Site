@@ -19,7 +19,7 @@ const ASSETS = {
 };
 
 const EMAIL = "trimmer@maggioupholstery.com";
-const PHONE = "(443) 280-9371";
+const PHONE = "(443) 338-3767";
 
 const Chip = ({ children }: { children: React.ReactNode }) => (
   <span className="inline-flex items-center rounded-full border border-zinc-800 bg-zinc-950 px-3 py-1 text-xs text-zinc-200">
